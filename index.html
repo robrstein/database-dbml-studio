@@ -1,0 +1,2787 @@
+<!DOCTYPE html>
+<html lang="es" class="h-full">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DBML Studio — Editor &amp; Visualizador ER</title>
+
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/jointjs/3.7.7/joint.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js" crossorigin="anonymous"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/mode/simple.min.js" crossorigin="anonymous"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.6.4/jquery.min.js" crossorigin="anonymous"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/lodash.js/4.17.21/lodash.min.js" crossorigin="anonymous"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/backbone.js/1.4.1/backbone-min.js" crossorigin="anonymous"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jointjs/3.7.7/joint.js" crossorigin="anonymous"></script>
+
+<style>
+  /* ---------- Base ---------- */
+  html, body { margin:0; padding:0; }
+  ::-webkit-scrollbar { width:10px; height:10px; }
+  ::-webkit-scrollbar-track { background:#0f172a; }
+  ::-webkit-scrollbar-thumb { background:#334155; border-radius:6px; }
+  ::-webkit-scrollbar-thumb:hover { background:#475569; }
+
+  #dbml-input { tab-size: 2; }
+
+  /* ---------- Resizer ---------- */
+  #resizer { transition: background-color .15s ease; }
+  #resizer.dragging, #resizer:hover { background-color:#6366f1; }
+  body.resizing { cursor: col-resize !important; user-select: none; }
+
+  /* ---------- Status dot ---------- */
+  .status-dot { width:8px; height:8px; border-radius:9999px; display:inline-block; }
+  @keyframes pulse-dot { 0%,100%{ opacity:1 } 50%{ opacity:.35 } }
+  .status-dot.saving { background:#f59e0b; animation: pulse-dot .9s infinite; }
+  .status-dot.saved { background:#22c55e; }
+  .status-dot.error { background:#ef4444; }
+
+  /* ---------- Toolbar buttons ---------- */
+  .tbtn {
+    display:inline-flex; align-items:center; gap:.35rem;
+    padding:.4rem .6rem; font-size:.75rem; border-radius:.5rem;
+    background:#1e293b; color:#cbd5e1; border:1px solid #334155;
+    white-space:nowrap; cursor:pointer; transition: all .12s ease;
+  }
+  .tbtn:hover { background:#334155; color:#fff; border-color:#475569; }
+  .tbtn:active { transform: scale(.96); }
+  .tbtn.active { background:#4f46e5; border-color:#6366f1; color:#fff; }
+  .tbtn:disabled { opacity:.35; cursor:not-allowed; }
+  .tbtn:disabled:hover { background:#1e293b; color:#cbd5e1; }
+
+  /* ---------- Search highlight pulse on canvas ---------- */
+  @keyframes cell-pulse {
+    0%   { filter: drop-shadow(0 0 0px #6366f1); }
+    50%  { filter: drop-shadow(0 0 14px #818cf8); }
+    100% { filter: drop-shadow(0 0 0px #6366f1); }
+  }
+  .cell-highlight { animation: cell-pulse 0.85s ease-in-out 3; }
+
+  /* ---------- Color swatches ---------- */
+  .swatch-btn {
+    width:20px; height:20px; border-radius:9999px; cursor:pointer;
+    border:2px solid rgba(255,255,255,0.15); box-shadow: 0 0 0 1px rgba(0,0,0,0.3) inset;
+    transition: transform .12s ease, border-color .12s ease;
+    padding:0; flex-shrink:0;
+  }
+  .swatch-btn:hover { transform: scale(1.15); }
+  .swatch-btn.active { border-color:#fff; transform: scale(1.15); box-shadow: 0 0 0 2px #6366f1; }
+  .hidden { display:none !important; }
+
+  /* ---------- CodeMirror: editor DBML ---------- */
+  .CodeMirror {
+    height: 100%; background: #020617; color: #e2e8f0;
+    font-family: Consolas, Menlo, monospace; font-size: 13px; line-height: 1.65;
+  }
+  .CodeMirror-gutters { background: #0f172a; border-right: 1px solid #1e293b; }
+  .CodeMirror-linenumber { color: #475569; padding: 0 8px 0 6px; }
+  .CodeMirror-cursor { border-left: 1.5px solid #818cf8; }
+  .CodeMirror-selected { background: #334155 !important; }
+  .cm-s-dbml-dark .cm-keyword { color: #818cf8; font-weight: 700; }
+  .cm-s-dbml-dark .cm-string { color: #fbbf24; }
+  .cm-s-dbml-dark .cm-comment { color: #64748b; font-style: italic; }
+  .cm-s-dbml-dark .cm-bracket { color: #38bdf8; }
+  .cm-s-dbml-dark .cm-operator { color: #f472b6; font-weight: 700; }
+  .cm-s-dbml-dark .cm-atom { color: #34d399; }
+  .cm-s-dbml-dark .cm-number { color: #34d399; }
+  .cm-s-dbml-dark .cm-attribute { color: #a5b4fc; }
+  .cm-s-dbml-dark .cm-variable { color: #e2e8f0; }
+  .cm-dbml-error-line { background: rgba(239,68,68,0.14) !important; }
+  .cm-dbml-error-marker { color: #ef4444; font-size: 13px; padding-left: 4px; cursor: default; }
+
+  /* ---------- Minimapa ---------- */
+  #minimap-panel {
+    background: rgba(15,23,42,0.92); border: 1px solid #334155; border-radius: .6rem;
+    padding: 4px; box-shadow: 0 4px 16px rgba(0,0,0,0.4); z-index: 40;
+  }
+  #minimap-canvas { display: block; border-radius: .4rem; cursor: crosshair; }
+
+  /* ---------- Editor de tabla (edición inversa) ---------- */
+  .te-field-row { display:flex; align-items:center; gap:6px; }
+  .te-field-row input[type="text"] {
+    background:#0f172a; border:1px solid #334155; border-radius:.4rem;
+    color:#e2e8f0; font-family:Consolas,Menlo,monospace; font-size:12px; padding:.35rem .5rem; outline:none;
+  }
+  .te-field-row input[type="text"]:focus { border-color:#6366f1; }
+  .te-field-row .te-fname { flex:1.2; min-width:0; }
+  .te-field-row .te-ftype { flex:1; min-width:0; }
+  .te-field-row .te-fpk { width:15px; height:15px; accent-color:#6366f1; flex-shrink:0; }
+  .te-field-row .te-fdel {
+    flex-shrink:0; width:22px; height:22px; border-radius:.4rem; border:1px solid #334155;
+    background:#1e293b; color:#f87171; cursor:pointer; font-size:11px; line-height:1;
+  }
+  .te-field-row .te-fdel:hover { background:#334155; }
+
+  #btn-snap.active { background:#4f46e5; border-color:#6366f1; color:#fff; }
+
+  /* ---------- Botones de vistas guardadas ---------- */
+  .view-slot-btn { position:relative; width:30px; justify-content:center; font-weight:600; }
+  .view-slot-btn.has-data::after {
+    content:''; position:absolute; top:2px; right:2px;
+    width:6px; height:6px; border-radius:9999px; background:#22c55e;
+  }
+  .view-slot-btn.flash-save { background:#16a34a !important; border-color:#22c55e !important; color:#fff !important; }
+  .view-slot-btn.flash-load { background:#4f46e5 !important; border-color:#6366f1 !important; color:#fff !important; }
+  .view-slot-btn.flash-empty { background:#7f1d1d !important; border-color:#ef4444 !important; color:#fff !important; }
+
+  /* ---------- Pestañas móviles (Editor / Diagrama) ---------- */
+  #mobile-tabbar { display: none; }
+  .mobile-tab {
+    flex: 1; padding: .65rem 0; text-align: center; font-size: .8rem; font-weight: 600;
+    color: #64748b; background: transparent; border: none; border-bottom: 2px solid transparent;
+  }
+  .mobile-tab.active { color: #a5b4fc; border-bottom-color: #6366f1; }
+
+  /* ---------- Responsive: mobile-first (menos de 768px) ---------- */
+  @media (max-width: 767px) {
+    #mobile-tabbar { display: flex; }
+    #app { flex-direction: column; }
+    #resizer { display: none; }
+    #editor-panel, #canvas-panel { width: 100% !important; min-width: 0 !important; height: 100%; }
+    #editor-panel.mobile-hide, #canvas-panel.mobile-hide { display: none !important; }
+
+    /* Toolbar: una sola fila con scroll horizontal en vez de wrap infinito */
+    #toolbar { flex-wrap: nowrap; overflow-x: auto; -webkit-overflow-scrolling: touch; padding-bottom: 10px; }
+    #toolbar::-webkit-scrollbar { height: 5px; }
+    #toolbar > * { flex-shrink: 0; }
+    #toolbar .flex-1 { display: none; } /* el separador elástico no aporta nada en una fila con scroll */
+
+    /* Objetivos táctiles un poco más grandes */
+    .tbtn { padding: .5rem .7rem; font-size: .8rem; }
+    .swatch-btn { width: 24px; height: 24px; }
+    .view-slot-btn { width: 34px; }
+
+    /* El minimapa un poco más chico para no tapar tanto lienzo */
+    #minimap-panel { transform: scale(0.8); transform-origin: bottom right; }
+
+    /* Modales: que nunca se salgan del ancho de la pantalla */
+    #modal-box, #table-editor-overlay > div { width: 92vw !important; max-width: 380px; }
+  }
+
+  /* ---------- Rubber-band selection ---------- */
+  #rubber-band {
+    position:absolute; border:1.5px dashed #818cf8;
+    background:rgba(99,102,241,0.15); pointer-events:none; z-index:60;
+  }
+  #paper-host { position:absolute; inset:0; }
+  #paper-container.panning { cursor: grabbing; }
+  #paper-container { cursor: default; background-image: radial-gradient(#1e293b 1px, transparent 1px); background-size: 22px 22px; }
+
+  /* Select styling */
+  select.tsel {
+    background:#1e293b; color:#cbd5e1; border:1px solid #334155;
+    font-size:.75rem; padding:.4rem .5rem; border-radius:.5rem; cursor:pointer;
+  }
+
+  /* Custom scrollbar-less textarea look */
+  textarea#dbml-input::placeholder { color:#475569; }
+
+  .fade-in { animation: fadein .25s ease; }
+  @keyframes fadein { from { opacity:0; transform:translateY(-4px);} to {opacity:1; transform:translateY(0);} }
+</style>
+</head>
+<body class="h-full bg-slate-900 text-slate-100 overflow-hidden" style="font-family: 'Segoe UI', Inter, ui-sans-serif, system-ui, sans-serif;">
+
+<div id="root-layout" class="flex flex-col h-full w-full">
+
+  <!-- ============ BARRA DE PESTAÑAS MÓVIL (solo <768px) ============ -->
+  <div id="mobile-tabbar" class="items-center bg-slate-800 border-b border-slate-700 shrink-0">
+    <button id="mtab-editor" class="mobile-tab" data-tab="editor">📝 Editor</button>
+    <button id="mtab-diagram" class="mobile-tab active" data-tab="diagram">📊 Diagrama</button>
+  </div>
+
+  <div id="app" class="flex flex-1 min-h-0 w-full">
+
+  <!-- ============ LEFT: DBML EDITOR PANEL ============ -->
+  <div id="editor-panel" class="flex flex-col shrink-0" style="width:38%; min-width:280px;">
+    <div class="flex items-center justify-between px-4 py-3 bg-slate-800 border-b border-slate-700">
+      <div class="flex items-center gap-2">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#818cf8" stroke-width="2"><rect x="3" y="4" width="18" height="4" rx="1"/><rect x="3" y="10" width="18" height="4" rx="1"/><rect x="3" y="16" width="10" height="4" rx="1"/></svg>
+        <span class="font-semibold tracking-tight text-slate-100 text-sm">DBML Studio</span>
+      </div>
+      <div class="flex items-center gap-1.5 text-[11px] text-slate-400" id="status-wrap">
+        <span class="status-dot saved" id="status-dot"></span>
+        <span id="status-text">Guardado</span>
+      </div>
+    </div>
+
+    <div class="flex items-center gap-1.5 px-2 py-2 bg-slate-800/70 border-b border-slate-700">
+      <select id="project-select" class="tsel flex-1 min-w-0" title="Cambiar entre modelos guardados">
+        <option value="">— Sin guardar —</option>
+      </select>
+      <button id="btn-project-save" class="tbtn" title="Guardar cambios en el modelo actual" disabled>💾</button>
+      <button id="btn-project-new" class="tbtn" title="Guardar el estado actual como un nuevo modelo">＋ Nuevo</button>
+      <button id="btn-project-delete" class="tbtn" title="Eliminar el modelo actual" disabled>🗑</button>
+    </div>
+
+    <textarea id="dbml-input" spellcheck="false"
+      class="flex-1 w-full bg-slate-950 text-slate-100 font-mono text-[13px] leading-relaxed p-4 outline-none resize-none"
+      placeholder="// Escribe tu esquema DBML aquí..."></textarea>
+
+    <div class="flex items-center gap-2 p-2 bg-slate-800 border-t border-slate-700">
+      <button id="btn-undo" class="tbtn" title="Deshacer (hasta 100 cambios)">↶ Deshacer</button>
+      <button id="btn-redo" class="tbtn" title="Rehacer">↷ Rehacer</button>
+      <div class="flex-1"></div>
+      <button id="btn-download-dbml" class="tbtn" title="Descargar como archivo .dbml">⬇ .dbml</button>
+    </div>
+  </div>
+
+  <!-- ============ RESIZER ============ -->
+  <div id="resizer" class="w-1.5 bg-slate-700 cursor-col-resize shrink-0"></div>
+
+  <!-- ============ RIGHT: CANVAS / DIAGRAM PANEL ============ -->
+  <div id="canvas-panel" class="flex-1 flex flex-col min-w-0 relative">
+
+    <!-- Toolbar -->
+    <div id="toolbar" class="flex items-center gap-2 p-2 bg-slate-800 border-b border-slate-700 flex-wrap">
+
+      <div class="relative">
+        <input id="search-input" type="text" placeholder="🔍 Buscar tabla..."
+          class="bg-slate-900 border border-slate-700 rounded-lg text-xs px-3 py-2 w-44 outline-none focus:border-indigo-500 text-slate-100 placeholder-slate-500">
+      </div>
+
+      <div class="w-px h-6 bg-slate-700 mx-1"></div>
+
+      <span class="text-[10px] uppercase tracking-wider text-slate-500 mr-1">Distribución</span>
+      <button class="tbtn layout-btn active" data-layout="auto" title="Distribución automática en cuadrícula">▦ Auto</button>
+      <button class="tbtn layout-btn" data-layout="color" title="Agrupar por color de cabecera">🎨 Color</button>
+      <button class="tbtn layout-btn" data-layout="name" title="Agrupar por prefijo de nombre">🔤 Nombre</button>
+      <button class="tbtn layout-btn" data-layout="relation" title="Simulación de fuerzas: las tablas relacionadas se atraen, el resto se repele">🔗 Relación</button>
+      <button class="tbtn layout-btn" data-layout="centrality" title="Tablas más conectadas al centro">🎯 Centralidad</button>
+      <button class="tbtn layout-btn" data-layout="size" title="Ordenar por cantidad de campos">📏 Tamaño</button>
+
+      <div class="w-px h-6 bg-slate-700 mx-1"></div>
+
+      <select id="theme-select" class="tsel" title="Tema visual de las tablas">
+        <option value="slate">Slate Oscuro (Fábrica)</option>
+        <option value="cyberpunk">Cyberpunk Neón</option>
+        <option value="minimal">Minimalista Claro</option>
+      </select>
+
+      <div class="w-px h-6 bg-slate-700 mx-1"></div>
+
+      <span class="text-[10px] uppercase tracking-wider text-slate-500 mr-1">Colores</span>
+      <div id="color-swatches" class="flex items-center gap-1.5"></div>
+      <button id="btn-clear-selection" class="tbtn hidden" title="Deseleccionar todo">✕ <span id="selection-count"></span></button>
+
+      <div class="w-px h-6 bg-slate-700 mx-1"></div>
+
+      <span class="text-[10px] uppercase tracking-wider text-slate-500 mr-1">Alinear</span>
+      <button id="align-left" class="tbtn align-btn" title="Alinear a la izquierda (2+ seleccionadas)" disabled>← Izq</button>
+      <button id="align-centerx" class="tbtn align-btn" title="Centrar horizontalmente (2+ seleccionadas)" disabled>↔ CentroX</button>
+      <button id="align-right" class="tbtn align-btn" title="Alinear a la derecha (2+ seleccionadas)" disabled>→ Der</button>
+      <button id="align-top" class="tbtn align-btn" title="Alinear arriba (2+ seleccionadas)" disabled>↑ Arriba</button>
+      <button id="align-centery" class="tbtn align-btn" title="Centrar verticalmente (2+ seleccionadas)" disabled>↕ CentroY</button>
+      <button id="align-bottom" class="tbtn align-btn" title="Alinear abajo (2+ seleccionadas)" disabled>↓ Abajo</button>
+      <button id="align-disth" class="tbtn align-btn" title="Distribuir espaciado horizontal uniforme (3+ seleccionadas)" disabled>Dist. H</button>
+      <button id="align-distv" class="tbtn align-btn" title="Distribuir espaciado vertical uniforme (3+ seleccionadas)" disabled>Dist. V</button>
+
+      <div class="w-px h-6 bg-slate-700 mx-1"></div>
+
+      <button id="btn-snap" class="tbtn" title="Ajustar tablas a una cuadrícula al arrastrarlas">🧲 Snap</button>
+      <button id="btn-multiselect" class="tbtn" title="Modo multi-selección: cada toque agrega/quita tablas de la selección (útil en pantallas táctiles). Con esto activo, arrastrar el fondo dibuja un recuadro de selección en vez de mover la vista.">☑ Multi</button>
+      <button id="btn-duplicate" class="tbtn" title="Duplicar selección (Ctrl+D)" disabled>⎘ Duplicar</button>
+      <button id="btn-delete-selection" class="tbtn" title="Eliminar selección (Supr)" disabled>🗑 Eliminar</button>
+
+      <div class="w-px h-6 bg-slate-700 mx-1"></div>
+
+      <span class="text-[10px] uppercase tracking-wider text-slate-500 mr-1" title="Clic: cargar vista guardada · Doble clic: guardar la vista actual">Vistas</span>
+      <div id="view-slots" class="flex items-center gap-1">
+        <button class="tbtn view-slot-btn" data-slot="1" title="Vista 1 — Clic: cargar · Doble clic: guardar">1</button>
+        <button class="tbtn view-slot-btn" data-slot="2" title="Vista 2 — Clic: cargar · Doble clic: guardar">2</button>
+        <button class="tbtn view-slot-btn" data-slot="3" title="Vista 3 — Clic: cargar · Doble clic: guardar">3</button>
+        <button class="tbtn view-slot-btn" data-slot="4" title="Vista 4 — Clic: cargar · Doble clic: guardar">4</button>
+        <button class="tbtn view-slot-btn" data-slot="5" title="Vista 5 — Clic: cargar · Doble clic: guardar">5</button>
+      </div>
+
+      <div class="w-px h-6 bg-slate-700 mx-1"></div>
+
+      <button id="btn-export-svg" class="tbtn" title="Exportar como SVG">⬇ SVG</button>
+      <button id="btn-export-png" class="tbtn" title="Exportar como PNG">⬇ PNG</button>
+
+      <div class="flex-1"></div>
+
+      <button id="btn-zoom-out" class="tbtn" title="Alejar">－</button>
+      <span id="zoom-label" class="text-xs text-slate-400 w-12 text-center select-none">100%</span>
+      <button id="btn-zoom-in" class="tbtn" title="Acercar">＋</button>
+      <button id="btn-zoom-fit" class="tbtn" title="Ajustar a pantalla">⤢ Ajustar</button>
+      <button id="btn-zoom-selection" class="tbtn" title="Encuadrar la selección (tecla F)" disabled>🎯 A selección</button>
+      <button id="btn-minimap" class="tbtn" title="Mostrar/ocultar minimapa">🗺 Minimapa</button>
+    </div>
+
+    <!-- Paper -->
+    <div id="paper-container" class="flex-1 relative overflow-hidden">
+      <div id="paper-host"></div>
+      <div id="empty-hint" class="absolute inset-0 flex items-center justify-center pointer-events-none text-slate-600 text-sm">
+        Escribe una tabla DBML a la izquierda para ver el diagrama
+      </div>
+      <div id="minimap-panel" class="absolute bottom-3 right-3 hidden">
+        <canvas id="minimap-canvas" width="200" height="140"></canvas>
+      </div>
+    </div>
+  </div>
+  </div>
+</div>
+
+<div id="modal-overlay" class="fixed inset-0 bg-black/60 z-[999] hidden flex items-center justify-center" style="backdrop-filter: blur(2px);">
+  <div id="modal-box" class="bg-slate-800 border border-slate-600 rounded-xl p-5 w-80 shadow-2xl fade-in">
+    <h3 id="modal-title" class="text-sm font-semibold text-slate-100 mb-2">Título</h3>
+    <p id="modal-message" class="text-xs text-slate-400 mb-3 leading-relaxed hidden"></p>
+    <input id="modal-input" type="text"
+      class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-100 outline-none focus:border-indigo-500 mb-4 hidden" />
+    <div class="flex justify-end gap-2">
+      <button id="modal-cancel" class="tbtn">Cancelar</button>
+      <button id="modal-confirm" class="tbtn active">Aceptar</button>
+    </div>
+  </div>
+</div>
+
+<div id="table-editor-overlay" class="fixed inset-0 bg-black/60 z-[999] hidden flex items-center justify-center" style="backdrop-filter: blur(2px);">
+  <div class="bg-slate-800 border border-slate-600 rounded-xl p-5 w-[420px] max-h-[85vh] flex flex-col shadow-2xl fade-in">
+    <div class="flex items-center justify-between mb-3">
+      <h3 id="te-title" class="text-sm font-semibold text-slate-100">Editar tabla</h3>
+      <span id="te-type-badge" class="text-[10px] uppercase tracking-wider text-slate-500"></span>
+    </div>
+
+    <label class="text-[11px] text-slate-400 mb-1">Nombre</label>
+    <input id="te-name" type="text"
+      class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-100 outline-none focus:border-indigo-500 mb-3 font-mono" />
+
+    <label id="te-fields-label" class="text-[11px] text-slate-400 mb-1">Campos</label>
+    <div id="te-fields" class="flex-1 overflow-y-auto flex flex-col gap-1.5 mb-2 pr-1" style="min-height:80px; max-height:320px;"></div>
+
+    <button id="te-add-field" class="tbtn self-start mb-3">＋ Agregar campo</button>
+
+    <div class="flex items-center justify-between gap-2 pt-2 border-t border-slate-700">
+      <button id="te-delete" class="tbtn" title="Eliminar esta tabla del esquema">🗑 Eliminar tabla</button>
+      <div class="flex gap-2">
+        <button id="te-cancel" class="tbtn">Cancelar</button>
+        <button id="te-save" class="tbtn active">Guardar</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  window.addEventListener('error', function (evt) {
+    console.error('[DBML Studio] Error no capturado:', evt.message, evt.error && evt.error.stack);
+  });
+
+  /* =========================================================================
+     0. REFERENCIAS DOM (declaradas primero para evitar ReferenceError)
+     ========================================================================= */
+  const elDbmlInput      = document.getElementById('dbml-input');
+  const elCanvasPanel    = document.getElementById('canvas-panel');
+  const elMobileTabbar   = document.getElementById('mobile-tabbar');
+  const elMtabEditor     = document.getElementById('mtab-editor');
+  const elMtabDiagram    = document.getElementById('mtab-diagram');
+  const elBtnMultiSelect = document.getElementById('btn-multiselect');
+  const elProjectSelect  = document.getElementById('project-select');
+  const elBtnProjectSave = document.getElementById('btn-project-save');
+  const elBtnProjectNew  = document.getElementById('btn-project-new');
+  const elBtnProjectDel  = document.getElementById('btn-project-delete');
+  const elModalOverlay   = document.getElementById('modal-overlay');
+  const elModalTitle     = document.getElementById('modal-title');
+  const elModalMessage   = document.getElementById('modal-message');
+  const elModalInput     = document.getElementById('modal-input');
+  const elModalConfirm   = document.getElementById('modal-confirm');
+  const elModalCancel    = document.getElementById('modal-cancel');
+  const alignButtons     = Array.from(document.querySelectorAll('.align-btn'));
+  const elBtnSnap        = document.getElementById('btn-snap');
+  const elBtnDuplicate   = document.getElementById('btn-duplicate');
+  const elBtnDeleteSel   = document.getElementById('btn-delete-selection');
+  const elTeOverlay      = document.getElementById('table-editor-overlay');
+  const elTeTitle        = document.getElementById('te-title');
+  const elTeTypeBadge    = document.getElementById('te-type-badge');
+  const elTeName         = document.getElementById('te-name');
+  const elTeFieldsLabel  = document.getElementById('te-fields-label');
+  const elTeFields       = document.getElementById('te-fields');
+  const elTeAddField     = document.getElementById('te-add-field');
+  const elTeDelete       = document.getElementById('te-delete');
+  const elTeCancel       = document.getElementById('te-cancel');
+  const elTeSave         = document.getElementById('te-save');
+  const elStatusDot      = document.getElementById('status-dot');
+  const elStatusText     = document.getElementById('status-text');
+  const elResizer        = document.getElementById('resizer');
+  const elEditorPanel    = document.getElementById('editor-panel');
+  const elApp            = document.getElementById('app');
+  const elPaperContainer = document.getElementById('paper-container');
+  const elPaperHost      = document.getElementById('paper-host');
+  const elEmptyHint      = document.getElementById('empty-hint');
+  const elSearchInput    = document.getElementById('search-input');
+  const elThemeSelect    = document.getElementById('theme-select');
+  const elColorSwatches  = document.getElementById('color-swatches');
+  const elBtnClearSel    = document.getElementById('btn-clear-selection');
+  const elSelectionCount = document.getElementById('selection-count');
+  const elZoomLabel      = document.getElementById('zoom-label');
+  const elBtnUndo        = document.getElementById('btn-undo');
+  const elBtnRedo        = document.getElementById('btn-redo');
+  const elBtnDownloadDbml= document.getElementById('btn-download-dbml');
+  const elBtnExportSvg   = document.getElementById('btn-export-svg');
+  const elBtnExportPng   = document.getElementById('btn-export-png');
+  const elBtnZoomIn      = document.getElementById('btn-zoom-in');
+  const elBtnZoomOut     = document.getElementById('btn-zoom-out');
+  const elBtnZoomFit     = document.getElementById('btn-zoom-fit');
+  const elBtnZoomSel     = document.getElementById('btn-zoom-selection');
+  const elBtnMinimap     = document.getElementById('btn-minimap');
+  const elMinimapPanel   = document.getElementById('minimap-panel');
+  const elMinimapCanvas  = document.getElementById('minimap-canvas');
+  const layoutButtons    = Array.from(document.querySelectorAll('.layout-btn'));
+  const viewSlotButtons  = Array.from(document.querySelectorAll('.view-slot-btn'));
+
+  /* =========================================================================
+     0a. UTILIDADES DE TEXTO
+     El parser DBML usa expresiones regulares "solo ASCII" ([a-zA-Z0-9_]) para
+     identificar nombres de tabla/campo/enum/grupo y relaciones "Ref:". Los
+     acentos y diacríticos (á, é, ü, ñ, etc.) quedan fuera de esas clases de
+     caracteres y rompían el parseo. Se normalizan a su letra equivalente sin
+     acento en cuanto entran al editor, así el resto de la app nunca los ve.
+     ========================================================================= */
+  function stripAccents(str) {
+    if (!str) return str;
+    return str.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  }
+
+  // Devuelve {x,y} tanto de eventos de mouse como táctiles, para poder
+  // reutilizar la misma lógica de arrastre (paneo, recuadro de selección,
+  // minimapa) en dispositivos con y sin mouse.
+  function getPointerXY(evt) {
+    if (evt.touches && evt.touches.length) return { x: evt.touches[0].clientX, y: evt.touches[0].clientY };
+    if (evt.changedTouches && evt.changedTouches.length) return { x: evt.changedTouches[0].clientX, y: evt.changedTouches[0].clientY };
+    return { x: evt.clientX, y: evt.clientY };
+  }
+
+  /* =========================================================================
+     0b. MODAL PROPIO (reemplaza prompt/confirm/alert nativos)
+     Algunos entornos de vista previa (iframes sandboxed) bloquean los
+     diálogos nativos del navegador sin avisar. Este modal HTML no depende
+     de esos permisos y funciona en cualquier contexto.
+     ========================================================================= */
+  function showModal(opts) {
+    opts = opts || {};
+    return new Promise(function (resolve) {
+      elModalTitle.textContent = opts.title || '';
+
+      if (opts.message) {
+        elModalMessage.textContent = opts.message;
+        elModalMessage.classList.remove('hidden');
+      } else {
+        elModalMessage.classList.add('hidden');
+      }
+
+      if (opts.withInput) {
+        elModalInput.classList.remove('hidden');
+        elModalInput.value = opts.defaultValue || '';
+      } else {
+        elModalInput.classList.add('hidden');
+      }
+
+      elModalConfirm.textContent = opts.confirmText || 'Aceptar';
+      elModalCancel.classList.toggle('hidden', !!opts.hideCancel);
+      elModalOverlay.classList.remove('hidden');
+
+      if (opts.withInput) {
+        setTimeout(function () { elModalInput.focus(); elModalInput.select(); }, 30);
+      }
+
+      function cleanup(result) {
+        elModalOverlay.classList.add('hidden');
+        elModalConfirm.removeEventListener('click', onConfirm);
+        elModalCancel.removeEventListener('click', onCancel);
+        elModalInput.removeEventListener('keydown', onKeydown);
+        resolve(result);
+      }
+      function onConfirm() { cleanup(opts.withInput ? elModalInput.value : true); }
+      function onCancel() { cleanup(opts.withInput ? null : false); }
+      function onKeydown(evt) {
+        if (evt.key === 'Enter') { evt.preventDefault(); onConfirm(); }
+        else if (evt.key === 'Escape') { onCancel(); }
+      }
+
+      elModalConfirm.addEventListener('click', onConfirm);
+      elModalCancel.addEventListener('click', onCancel);
+      elModalInput.addEventListener('keydown', onKeydown);
+    });
+  }
+
+  function showAlert(title, message) {
+    return showModal({ title: title, message: message, hideCancel: true, confirmText: 'Entendido' });
+  }
+
+  /* =========================================================================
+     0c. EDITOR DE CÓDIGO (CodeMirror) — resaltado de sintaxis + números de línea
+     ========================================================================= */
+  CodeMirror.defineSimpleMode('dbml', {
+    start: [
+      { regex: /\/\/.*/, token: 'comment' },
+      { regex: /"(?:[^\\"]|\\.)*"/, token: 'string' },
+      { regex: /'(?:[^\\']|\\.)*'/, token: 'string' },
+      { regex: /\b(Table|Ref|Enum|TableGroup|Note|indexes|as)\b/, token: 'keyword' },
+      { regex: /\[/, token: 'bracket', next: 'settings' },
+      { regex: /[{}]/, token: 'bracket' },
+      { regex: /(<>|>|<|-)/, token: 'operator' },
+      { regex: /#[0-9a-fA-F]{3,8}\b/, token: 'atom' },
+      { regex: /\b\d+\b/, token: 'number' },
+      { regex: /[a-zA-Z_][a-zA-Z0-9_]*/, token: 'variable' }
+    ],
+    settings: [
+      { regex: /\]/, token: 'bracket', next: 'start' },
+      { regex: /"(?:[^\\"]|\\.)*"/, token: 'string' },
+      { regex: /#[0-9a-fA-F]{3,8}\b/, token: 'atom' },
+      { regex: /[a-zA-Z_][a-zA-Z0-9_]*/, token: 'attribute' },
+      { regex: /./, token: 'attribute' }
+    ],
+    meta: { lineComment: '//' }
+  });
+
+  const cm = CodeMirror.fromTextArea(elDbmlInput, {
+    mode: 'dbml',
+    theme: 'dbml-dark',
+    lineNumbers: true,
+    lineWrapping: false,
+    indentUnit: 2,
+    tabSize: 2,
+    gutters: ['CodeMirror-linenumbers', 'dbml-error-gutter']
+  });
+  cm.getWrapperElement().style.flex = '1 1 auto';
+  cm.getWrapperElement().style.minHeight = '0';
+  cm.getWrapperElement().style.width = '100%';
+
+  // Intercepta cada cambio (tipeo o pegado) antes de insertarlo y le quita
+  // los acentos/diacríticos, para que el DBML fuente nunca los contenga.
+  cm.on('beforeChange', function (instance, change) {
+    if (change.origin === 'setValue') return; // setDbml() ya normaliza el texto completo
+    const cleaned = change.text.map(line => stripAccents(line));
+    const changed = cleaned.some((line, i) => line !== change.text[i]);
+    if (changed) change.update(change.from, change.to, cleaned);
+  });
+
+  function getDbml() { return cm.getValue(); }
+  function setDbml(text) { cm.setValue(stripAccents(text || '')); }
+
+  function clearDbmlMarkers() {
+    const total = cm.lineCount();
+    for (let i = 0; i < total; i++) {
+      cm.removeLineClass(i, 'background', 'cm-dbml-error-line');
+    }
+    cm.clearGutter('dbml-error-gutter');
+  }
+
+  function markDbmlErrors(problems) {
+    clearDbmlMarkers();
+    problems.forEach(function (p) {
+      if (p.line == null || p.line < 0 || p.line >= cm.lineCount()) return;
+      cm.addLineClass(p.line, 'background', 'cm-dbml-error-line');
+      const marker = document.createElement('span');
+      marker.className = 'cm-dbml-error-marker';
+      marker.textContent = '⚠';
+      marker.title = p.message;
+      cm.setGutterMarker(p.line, 'dbml-error-gutter', marker);
+    });
+  }
+
+  /* =========================================================================
+     1. CONFIGURACIÓN / CLAVES DE PERSISTENCIA
+     ========================================================================= */
+  const LS_KEYS = {
+    dbml: 'dbmlstudio.dbml',
+    layout: 'dbmlstudio.layout',
+    positions: 'dbmlstudio.positions',
+    theme: 'dbmlstudio.theme',
+    splitWidth: 'dbmlstudio.splitWidth',
+    viewPrefix: 'dbmlstudio.view.',
+    projectsIndex: 'dbmlstudio.projects.index',
+    projectPrefix: 'dbmlstudio.project.',
+    snap: 'dbmlstudio.snap'
+  };
+
+  const DEFAULT_DBML =
+`// Bienvenido a DBML Studio
+// Edita este esquema y observa el diagrama actualizarse en tiempo real
+
+Table users [headercolor: #6366f1] {
+  id int [pk, increment]
+  name varchar(120)
+  email varchar(160) [not null]
+  created_at datetime
+}
+
+Table posts [headercolor: #06b6d4] {
+  id int [pk, increment]
+  user_id int [not null]
+  title varchar(200)
+  body text
+  published boolean
+}
+
+Table comments [headercolor: #f59e0b] {
+  id int [pk, increment]
+  post_id int
+  user_id int
+  content text
+  created_at datetime
+}
+
+Table tags [headercolor: #10b981] {
+  id int [pk, increment]
+  name varchar(60)
+}
+
+Table post_tags [headercolor: #10b981] {
+  post_id int
+  tag_id int
+}
+
+Ref: posts.user_id > users.id
+Ref: comments.post_id > posts.id
+Ref: comments.user_id > users.id
+Ref: post_tags.post_id > posts.id
+Ref: post_tags.tag_id > tags.id
+`;
+
+  /* =========================================================================
+     2. ESTADO GLOBAL
+     ========================================================================= */
+  const state = {
+    graph: null,
+    paper: null,
+    layoutMode: localStorage.getItem(LS_KEYS.layout) || 'auto',
+    theme: localStorage.getItem(LS_KEYS.theme) || 'slate',
+    positions: {},           // { tableName: {x,y} }
+    parsed: { tables: [], refs: [] },
+    history: [],             // hasta MAX_HISTORY (100) textos DBML
+    historyIndex: -1,
+    saveTimer: null,
+    renderTimer: null,
+    zoom: 1,
+    panning: false,
+    panStart: { x: 0, y: 0, tx: 0, ty: 0 },
+    suppressHistoryPush: false,
+    selected: new Set(),        // ids de tablas seleccionadas
+    activeColorFilter: null,    // color activo seleccionado vía swatch
+    rubberBand: null,           // datos del recuadro de selección en curso
+    dragGroup: null,            // datos del arrastre múltiple en curso
+    currentProjectId: null,     // id del modelo guardado actualmente cargado (o null si es el borrador sin guardar)
+    snapEnabled: localStorage.getItem('dbmlstudio.snap') === '1',
+    collapsedGroups: new Set(),  // nombres de TableGroup actualmente colapsados (solo de sesión)
+    minimapVisible: localStorage.getItem('dbmlstudio.minimap') !== '0',
+    minimapDragging: false,
+    mobileView: 'diagram',   // 'editor' | 'diagram' — solo aplica visualmente en pantallas <768px
+    multiSelectMode: false   // toque = alternar selección, y arrastrar el fondo = recuadro (útil en touch)
+  };
+
+  try {
+    state.positions = JSON.parse(localStorage.getItem(LS_KEYS.positions) || '{}');
+  } catch (e) { state.positions = {}; }
+
+  /* =========================================================================
+     3. TEMAS VISUALES
+     ========================================================================= */
+  const THEMES = {
+    slate: {
+      bodyFill: '#1e293b', stroke: '#475569', strokeWidth: 1.5,
+      headerTextColor: '#ffffff', textColor: '#e2e8f0', typeColor: '#94a3b8',
+      rowFillA: '#1e293b', rowFillB: '#243244',
+      sepColor: '#334155', fontFamily: 'Consolas, Menlo, monospace',
+      defaultPalette: ['#6366f1', '#06b6d4', '#f59e0b', '#10b981', '#ec4899', '#8b5cf6', '#ef4444', '#0ea5e9'],
+      linkColor: '#64748b', filter: null, rx: 10
+    },
+    cyberpunk: {
+      bodyFill: '#0a0a12', stroke: '#ff2bd6', strokeWidth: 1.5,
+      headerTextColor: '#0a0a12', textColor: '#7dfcff', typeColor: '#ff62e6',
+      rowFillA: '#0a0a12', rowFillB: '#140a1f',
+      sepColor: '#33143f', fontFamily: 'Consolas, Menlo, monospace',
+      defaultPalette: ['#00f6ff', '#ff2bd6', '#faff00', '#39ff14', '#ff6a00', '#c400ff'],
+      linkColor: '#00f6ff',
+      filter: { name: 'dropShadow', args: { dx: 0, dy: 0, blur: 4, color: '#ff2bd6', opacity: 0.9 } },
+      rx: 4
+    },
+    minimal: {
+      bodyFill: '#ffffff', stroke: '#d4d4d8', strokeWidth: 1,
+      headerTextColor: '#18181b', textColor: '#27272a', typeColor: '#71717a',
+      rowFillA: '#ffffff', rowFillB: '#f8fafc',
+      sepColor: '#e4e4e7', fontFamily: 'Menlo, Consolas, monospace',
+      defaultPalette: ['#a5b4fc', '#7dd3fc', '#fcd34d', '#86efac', '#f9a8d4', '#c4b5fd'],
+      linkColor: '#a1a1aa', filter: null, rx: 6
+    }
+  };
+
+  /* =========================================================================
+     4. PARSER DBML (subconjunto pragmático)
+     ========================================================================= */
+  function cardinalityPair(symbol) {
+    // Cardinalidad tal como aparece escrita: {izquierda, derecha}
+    switch (symbol) {
+      case '>': return { left: 'N', right: '1' };   // muchos-a-uno
+      case '<': return { left: '1', right: 'N' };   // uno-a-muchos
+      case '<>': return { left: 'N', right: 'N' };  // muchos-a-muchos
+      default: return { left: '1', right: '1' };    // '-' uno-a-uno
+    }
+  }
+
+  function parseDBML(text) {
+    const tables = [];
+    const refs = [];
+    const groups = [];
+    if (!text || !text.trim()) return { tables, refs, groups };
+
+    // Elimina bloques "indexes { ... }" para no confundir al parser de campos
+    const cleaned = text.replace(/indexes\s*\{[^}]*\}/gi, '');
+
+    // --- Tablas ---
+    const tableRe = /Table\s+([a-zA-Z0-9_."]+)\s*(?:as\s+[a-zA-Z0-9_]+)?\s*(?:\[([^\]]*)\])?\s*\{([\s\S]*?)\}/gi;
+    let m;
+    while ((m = tableRe.exec(cleaned)) !== null) {
+      const rawName = m[1].replace(/"/g, '');
+      const settings = m[2] || '';
+      const body = m[3] || '';
+
+      let color = null;
+      const colorMatch = settings.match(/headercolor:\s*["']?(#[0-9a-fA-F]{3,8}|[a-zA-Z]+)["']?/i);
+      if (colorMatch) color = colorMatch[1];
+
+      const fields = [];
+      const lines = body.split('\n');
+      lines.forEach(line => {
+        const trimmed = line.trim();
+        if (!trimmed) return;
+        if (/^Note\b/i.test(trimmed)) return;
+        if (/^\/\//.test(trimmed)) return;
+
+        const fieldMatch = trimmed.match(/^([a-zA-Z0-9_."]+)\s+([a-zA-Z0-9_()., ]+?)(?:\s*\[([^\]]*)\])?\s*$/);
+        if (!fieldMatch) return;
+        const fName = fieldMatch[1].replace(/"/g, '');
+        const fType = (fieldMatch[2] || '').trim();
+        const fSettings = fieldMatch[3] || '';
+        const isPk = /\bpk\b|\bprimary key\b/i.test(fSettings);
+
+        fields.push({ name: fName, type: fType, pk: isPk });
+
+        // ref inline: [ref: > other.col] (también soporta <> para muchos-a-muchos)
+        const inlineRef = fSettings.match(/ref:\s*(<>|>|<|-)\s*([a-zA-Z0-9_."]+)\.([a-zA-Z0-9_."]+)/i);
+        if (inlineRef) {
+          const dir = inlineRef[1];
+          const otherTable = inlineRef[2].replace(/"/g, '');
+          const otherField = inlineRef[3].replace(/"/g, '');
+          const pair = cardinalityPair(dir);
+          if (dir === '<') {
+            refs.push({ from: { table: otherTable, field: otherField }, to: { table: rawName, field: fName }, cardinality: { source: pair.right, target: pair.left }, line: null });
+          } else {
+            refs.push({ from: { table: rawName, field: fName }, to: { table: otherTable, field: otherField }, cardinality: { source: pair.left, target: pair.right }, line: null });
+          }
+        }
+      });
+
+      tables.push({ name: rawName, color, fields });
+    }
+
+    // --- Enums: se representan como "pseudo-tablas" sin tipos, para
+    //     reutilizar todo el pipeline de render/layout/colores existente ---
+    const enumRe = /Enum\s+([a-zA-Z0-9_." ]+?)\s*(?:\[([^\]]*)\])?\s*\{([\s\S]*?)\}/gi;
+    let en;
+    while ((en = enumRe.exec(cleaned)) !== null) {
+      const eName = en[1].replace(/"/g, '').trim();
+      const eSettings = en[2] || '';
+      const eBody = en[3] || '';
+      let eColor = null;
+      const eColorMatch = eSettings.match(/headercolor:\s*["']?(#[0-9a-fA-F]{3,8}|[a-zA-Z]+)["']?/i);
+      if (eColorMatch) eColor = eColorMatch[1];
+
+      const values = [];
+      eBody.split('\n').forEach(line => {
+        const t = line.trim();
+        if (!t || /^\/\//.test(t) || /^Note\b/i.test(t)) return;
+        const valMatch = t.match(/^([a-zA-Z0-9_."]+)/);
+        if (valMatch) values.push({ name: valMatch[1].replace(/"/g, ''), type: '', pk: false });
+      });
+
+      tables.push({ name: eName, color: eColor, fields: values, isEnum: true });
+    }
+
+    // --- TableGroup: agrupa visualmente un conjunto de tablas existentes ---
+    const groupRe = /TableGroup\s+([a-zA-Z0-9_." ]+?)\s*\{([\s\S]*?)\}/gi;
+    let gm;
+    while ((gm = groupRe.exec(cleaned)) !== null) {
+      const gName = gm[1].replace(/"/g, '').trim();
+      const gBody = gm[2] || '';
+      const memberTables = [];
+      gBody.split('\n').forEach(line => {
+        const t = line.trim();
+        if (!t || /^\/\//.test(t)) return;
+        const nameOnly = t.split(/\s+/)[0].replace(/"/g, '');
+        if (nameOnly) memberTables.push(nameOnly);
+      });
+      if (memberTables.length) groups.push({ name: gName, tables: memberTables });
+    }
+
+    // --- Refs top-level ---
+    // Se escanea el texto ORIGINAL línea por línea (no el "cleaned") para
+    // obtener números de línea exactos y poder marcar errores en el editor.
+    // Nota: el nombre opcional de la relación (p. ej. "Ref nombre_fk: ...")
+    // debe quedar delimitado por los dos puntos obligatorios ':' para no
+    // confundirse con el nombre real de la primera tabla referenciada.
+    const refLineRe = /^\s*Ref\s*(?:[a-zA-Z0-9_]+)?\s*:\s*([a-zA-Z0-9_]+)\.([a-zA-Z0-9_]+)\s*(<>|>|<|-)\s*([a-zA-Z0-9_]+)\.([a-zA-Z0-9_]+)/i;
+    text.split('\n').forEach((lineText, idx) => {
+      const rm = lineText.match(refLineRe);
+      if (!rm) return;
+      const t1 = rm[1], f1 = rm[2], dir = rm[3], t2 = rm[4], f2 = rm[5];
+      const pair = cardinalityPair(dir);
+      if (dir === '<') {
+        refs.push({ from: { table: t2, field: f2 }, to: { table: t1, field: f1 }, cardinality: { source: pair.right, target: pair.left }, line: idx });
+      } else {
+        refs.push({ from: { table: t1, field: f1 }, to: { table: t2, field: f2 }, cardinality: { source: pair.left, target: pair.right }, line: idx });
+      }
+    });
+
+    return { tables, refs, groups };
+  }
+
+  /* =========================================================================
+     5. JOINTJS: INICIALIZACIÓN
+     ========================================================================= */
+  const graph = new joint.dia.Graph({}, { cellNamespace: joint.shapes });
+  const paper = new joint.dia.Paper({
+    el: elPaperHost,
+    model: graph,
+    width: '100%',
+    height: '100%',
+    gridSize: 10,
+    drawGrid: false,
+    background: { color: 'transparent' },
+    interactive: function (cellView) { return cellView.model.get('type') !== 'app.Group'; },
+    async: true,
+    defaultRouter: { name: 'manhattan', args: { padding: 12, step: 12 } },
+    defaultConnector: { name: 'rounded', args: { radius: 8 } },
+    cellViewNamespace: joint.shapes,
+    elementView: joint.dia.ElementView,
+    linkView: joint.dia.LinkView
+  });
+  state.graph = graph;
+  state.paper = paper;
+
+  const ROW_H = 24;
+  const HEADER_H = 32;
+  const MIN_W = 220;
+
+  function measureWidth(table) {
+    let maxLen = table.name.length + 4;
+    table.fields.forEach(f => { maxLen = Math.max(maxLen, (f.name.length + f.type.length + 6)); });
+    return Math.max(MIN_W, Math.min(360, maxLen * 8));
+  }
+
+  function colorFor(table, index, theme) {
+    if (table.color) return normalizeColor(table.color);
+    if (table.isEnum) return '#a855f7';
+    const pal = THEMES[theme].defaultPalette;
+    return pal[index % pal.length];
+  }
+
+  function normalizeColor(c) {
+    if (!c) return '#6366f1';
+    if (c[0] === '#') return c;
+    // nombres CSS simples
+    const named = { red: '#ef4444', blue: '#3b82f6', green: '#22c55e', yellow: '#f59e0b', purple: '#8b5cf6', orange: '#f97316', pink: '#ec4899', cyan: '#06b6d4', teal: '#14b8a6', gray: '#6b7280', grey: '#6b7280' };
+    return named[c.toLowerCase()] || '#6366f1';
+  }
+
+  function buildTableMarkup(fieldCount) {
+    const markup = [
+      { tagName: 'rect', selector: 'body' },
+      { tagName: 'rect', selector: 'header' },
+      { tagName: 'text', selector: 'headerText' }
+    ];
+    for (let i = 0; i < fieldCount; i++) {
+      markup.push({ tagName: 'rect', selector: 'row' + i });
+      markup.push({ tagName: 'text', selector: 'pk' + i });
+      markup.push({ tagName: 'text', selector: 'fname' + i });
+      markup.push({ tagName: 'text', selector: 'ftype' + i });
+      markup.push({ tagName: 'line', selector: 'sep' + i });
+    }
+    return markup;
+  }
+
+  function buildTableAttrs(table, width, height, headerColor, theme) {
+    const th = THEMES[theme];
+    const attrs = {
+      body: {
+        width, height, fill: th.bodyFill, stroke: th.stroke,
+        strokeWidth: th.strokeWidth, rx: th.rx, ry: th.rx
+      },
+      header: {
+        width, height: HEADER_H, fill: headerColor, stroke: 'none',
+        rx: th.rx, ry: th.rx
+      },
+      headerText: {
+        text: (table.isEnum ? '🔤 ' : '') + table.name, x: 10, y: 21, fill: th.headerTextColor,
+        fontWeight: '700', fontSize: 13, fontFamily: th.fontFamily
+      }
+    };
+    table.fields.forEach((f, i) => {
+      const y = HEADER_H + i * ROW_H;
+      attrs['row' + i] = { x: 0, y, width, height: ROW_H, fill: i % 2 === 0 ? th.rowFillA : th.rowFillB };
+      attrs['pk' + i] = { text: f.pk ? '🔑' : '', x: 8, y: y + 16, fontSize: 10 };
+      attrs['fname' + i] = { text: f.name, x: 26, y: y + 16, fill: th.textColor, fontSize: 12, fontFamily: th.fontFamily, fontWeight: f.pk ? '700' : '400' };
+      attrs['ftype' + i] = { text: f.type, x: width - 10, y: y + 16, fill: th.typeColor, fontSize: 10.5, fontFamily: th.fontFamily, textAnchor: 'end' };
+      attrs['sep' + i] = { x1: 0, y1: y + ROW_H, x2: width, y2: y + ROW_H, stroke: th.sepColor, strokeWidth: 0.75 };
+    });
+    return attrs;
+  }
+
+  function computeRefProblems(parsed) {
+    const tableMap = {};
+    parsed.tables.forEach(t => { tableMap[t.name] = t; });
+    const problems = [];
+    parsed.refs.forEach(ref => {
+      if (ref.line == null) return; // solo se pueden marcar refs "Ref:" de nivel superior (con línea conocida)
+      const fromTable = tableMap[ref.from.table];
+      const toTable = tableMap[ref.to.table];
+      if (!fromTable) { problems.push({ line: ref.line, message: 'La tabla "' + ref.from.table + '" no existe.' }); return; }
+      if (!toTable) { problems.push({ line: ref.line, message: 'La tabla "' + ref.to.table + '" no existe.' }); return; }
+      const fromHasField = fromTable.fields.some(f => f.name === ref.from.field);
+      const toHasField = toTable.fields.some(f => f.name === ref.to.field);
+      if (!fromHasField) { problems.push({ line: ref.line, message: 'El campo "' + ref.from.field + '" no existe en "' + ref.from.table + '".' }); return; }
+      if (!toHasField) { problems.push({ line: ref.line, message: 'El campo "' + ref.to.field + '" no existe en "' + ref.to.table + '".' }); return; }
+    });
+    return problems;
+  }
+
+  // Ubica en qué línea(s) del texto ORIGINAL se declara cada "Table"/"Enum",
+  // escaneando línea por línea (igual que con "Ref:") para tener números de
+  // línea exactos, sin depender del texto "cleaned" que usa el resto del parser.
+  function findDeclarationLines(rawText) {
+    const declLines = {};
+    const re = /^\s*(Table|Enum)\s+"?([a-zA-Z0-9_]+)"?/i;
+    rawText.split('\n').forEach((line, idx) => {
+      const m = line.match(re);
+      if (!m) return;
+      const name = m[2];
+      (declLines[name] = declLines[name] || []).push(idx);
+    });
+    return declLines;
+  }
+
+  // Validaciones estructurales adicionales: nombres de tabla/enum repetidos
+  // y campos repetidos dentro de una misma tabla.
+  function computeStructuralProblems(parsed, rawText) {
+    const problems = [];
+    const declLines = findDeclarationLines(rawText);
+
+    Object.keys(declLines).forEach(name => {
+      const lines = declLines[name];
+      if (lines.length > 1) {
+        lines.forEach(line => {
+          problems.push({ line, message: 'El nombre "' + name + '" está repetido (aparece ' + lines.length + ' veces).' });
+        });
+      }
+    });
+
+    parsed.tables.forEach(t => {
+      const counts = {};
+      t.fields.forEach(f => { counts[f.name] = (counts[f.name] || 0) + 1; });
+      const dupNames = Object.keys(counts).filter(n => counts[n] > 1);
+      if (!dupNames.length) return;
+      const lines = declLines[t.name] || [];
+      const line = lines.length ? lines[0] : null;
+      if (line == null) return;
+      dupNames.forEach(fname => {
+        problems.push({ line, message: 'El campo "' + fname + '" está repetido dentro de "' + t.name + '" (' + counts[fname] + ' veces).' });
+      });
+    });
+
+    return problems;
+  }
+
+  // Notación crow's-foot real: "N" se dibuja como una pata de gallo (3 líneas
+  // divergentes) tocando la tabla; "1" como una barra perpendicular ("exactamente
+  // uno"). El origen (0,0) del path coincide con el punto de contacto con la
+  // tabla; +x se extiende hacia atrás, a lo largo de la línea.
+  function crowsFootMarker(card, color) {
+    if (card === 'N') {
+      return { type: 'path', d: 'M 0 0 12 -7 M 0 0 12 0 M 0 0 12 7', fill: 'none', stroke: color, 'stroke-width': 1.5 };
+    }
+    return { type: 'path', d: 'M 9 -7 9 7', fill: 'none', stroke: color, 'stroke-width': 1.5 };
+  }
+
+  function renderGraph(dbmlText, opts) {
+    opts = opts || {};
+    const parsed = parseDBML(dbmlText);
+    state.parsed = parsed;
+    markDbmlErrors(computeRefProblems(parsed).concat(computeStructuralProblems(parsed, dbmlText)));
+
+    elEmptyHint.style.display = parsed.tables.length ? 'none' : 'flex';
+
+    // Congelamos el paper mientras reconstruimos el grafo para evitar que
+    // JointJS intente ordenar/renderizar vistas a medio crear (async paper).
+    paper.freeze();
+
+    if (!parsed.tables.length) {
+      graph.resetCells([]);
+      paper.unfreeze();
+      state.selected.clear();
+      updateSelectionUI();
+      elColorSwatches.innerHTML = '';
+      return;
+    }
+
+    const theme = state.theme;
+    const elementsByName = {};
+    const newElements = [];
+    const newLinks = [];
+
+    // Tablas ocultas por pertenecer a un TableGroup colapsado: no se crean sus
+    // elementos ni los enlaces que las tocan (estos se omiten solos, ya que
+    // el lookup por elementsByName fallará más abajo para esas refs).
+    const hiddenByCollapse = new Set();
+    (parsed.groups || []).forEach(g => {
+      if (state.collapsedGroups.has(g.name)) g.tables.forEach(t => hiddenByCollapse.add(t));
+    });
+
+    parsed.tables.forEach((table, idx) => {
+      if (hiddenByCollapse.has(table.name)) return;
+      const width = measureWidth(table);
+      const height = HEADER_H + table.fields.length * ROW_H;
+      const headerColor = colorFor(table, idx, theme);
+      const saved = state.positions[table.name];
+      const pos = saved || { x: 80 + (idx % 4) * 280, y: 80 + Math.floor(idx / 4) * 220 };
+
+      const el = new joint.dia.Element({
+        id: 'tbl_' + table.name,
+        type: 'app.Table',
+        position: pos,
+        size: { width, height },
+        attrs: buildTableAttrs(table, width, height, headerColor, theme),
+        z: 2
+      });
+      // IMPORTANTE: el markup con número variable de filas debe asignarse
+      // como propiedad directa de la instancia (no vía atributos de Backbone
+      // en el constructor), porque CellView lee `model.markup` directamente.
+      el.markup = buildTableMarkup(table.fields.length);
+      if (THEMES[theme].filter) {
+        el.attr('body/filter', THEMES[theme].filter);
+      }
+      el.set('tableName', table.name, { silent: true });
+      elementsByName[table.name] = el;
+      newElements.push(el);
+    });
+
+    parsed.refs.forEach(ref => {
+      const src = elementsByName[ref.from.table];
+      const tgt = elementsByName[ref.to.table];
+      if (!src || !tgt) return;
+      const card = ref.cardinality || { source: '1', target: '1' };
+      const linkColor = THEMES[theme].linkColor;
+      const link = new joint.dia.Link({
+        id: 'ref_' + ref.from.table + '_' + ref.from.field + '_' + ref.to.table + '_' + ref.to.field + '_' + Math.random().toString(36).slice(2, 7),
+        type: 'app.Ref',
+        source: { id: src.id },
+        target: { id: tgt.id },
+        router: { name: 'manhattan', args: { padding: 12, step: 12 } },
+        connector: { name: 'rounded', args: { radius: 8 } },
+        attrs: {
+          line: {
+            stroke: linkColor, strokeWidth: 1.6,
+            sourceMarker: crowsFootMarker(card.source, linkColor),
+            targetMarker: crowsFootMarker(card.target, linkColor)
+          }
+        },
+        z: 1
+      });
+      link.appendLabel({
+        attrs: {
+          text: { text: ref.from.field + ' → ' + ref.to.field, fill: THEMES[theme].linkColor, fontSize: 9, fontFamily: THEMES[theme].fontFamily },
+          rect: { fill: THEMES[theme].bodyFill, stroke: 'none' }
+        },
+        position: { distance: 0.5 }
+      });
+
+      newLinks.push(link);
+    });
+
+    // Reconstrucción atómica: evita eventos "add" intermedios que disparan
+    // ordenamientos de vistas inexistentes en un paper async.
+    graph.resetCells(newElements.concat(newLinks));
+
+    paper.unfreeze();
+    recomputeGroupFrames();
+    renderCollapsedChips();
+    updateMinimap();
+
+    // Reaplica la selección vigente (si las tablas siguen existiendo) y
+    // refresca los swatches de color disponibles en el toolbar.
+    const stillValid = new Set();
+    state.selected.forEach(id => { if (graph.getCell(id)) stillValid.add(id); });
+    state.selected = stillValid;
+    state.selected.forEach(id => highlightElement(id));
+    updateSelectionUI();
+    updateColorSwatches();
+
+    if (!opts.keepPositions && !Object.keys(state.positions).length) {
+      applyLayout(state.layoutMode, { silent: true });
+    }
+  }
+
+  /* =========================================================================
+     6. LAYOUTS
+     ========================================================================= */
+  function getElements() { return graph.getElements().filter(el => el.get('type') !== 'app.Group'); }
+
+  function saveAllPositions() {
+    const positions = {};
+    getElements().forEach(el => {
+      const name = el.get('tableName');
+      if (name) positions[name] = el.position();
+    });
+    state.positions = positions;
+    localStorage.setItem(LS_KEYS.positions, JSON.stringify(positions));
+  }
+
+  function animateTo(el, x, y) {
+    el.position(x, y);
+  }
+
+  /* --- Marcos de TableGroup: recuadro punteado detrás de las tablas del grupo --- */
+  function groupElementId(name) { return 'grp_' + name; }
+
+  function computeGroupBBox(tableNames) {
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity, found = false;
+    tableNames.forEach(name => {
+      const el = graph.getCell('tbl_' + name);
+      if (!el) return;
+      found = true;
+      const pos = el.position(), size = el.size();
+      minX = Math.min(minX, pos.x); minY = Math.min(minY, pos.y);
+      maxX = Math.max(maxX, pos.x + size.width); maxY = Math.max(maxY, pos.y + size.height);
+    });
+    if (!found) return null;
+    return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+  }
+
+  function recomputeGroupFrames() {
+    const groups = (state.parsed && state.parsed.groups) || [];
+    const pad = 26, labelSpace = 24;
+    groups.forEach(g => {
+      if (state.collapsedGroups.has(g.name)) return; // se dibuja como chip aparte
+      const bbox = computeGroupBBox(g.tables);
+      if (!bbox) return;
+      const id = groupElementId(g.name);
+      const x = bbox.x - pad, y = bbox.y - pad - labelSpace;
+      const w = bbox.width + pad * 2, h = bbox.height + pad * 2 + labelSpace;
+      let el = graph.getCell(id);
+      if (!el) {
+        el = new joint.dia.Element({ id, type: 'app.Group', position: { x, y }, size: { width: w, height: h }, z: 0 });
+        el.markup = [
+          { tagName: 'rect', selector: 'frame' },
+          { tagName: 'text', selector: 'label' }
+        ];
+        el.attr('frame', {
+          width: w, height: h, fill: 'rgba(99,102,241,0.05)',
+          stroke: '#6366f1', strokeWidth: 1.5, strokeDasharray: '6,4', rx: 12, ry: 12
+        });
+        el.attr('label', {
+          text: '▾ ' + g.name, x: 12, y: 18, fill: '#a5b4fc', fontSize: 11,
+          fontWeight: '700', fontFamily: 'Consolas, Menlo, monospace', cursor: 'pointer'
+        });
+        el.set('groupName', g.name, { silent: true });
+        el.set('collapsed', false, { silent: true });
+        graph.addCell(el);
+      } else {
+        el.set({ position: { x, y }, size: { width: w, height: h } });
+        el.attr('frame/width', w);
+        el.attr('frame/height', h);
+      }
+    });
+  }
+
+  // Dibuja un "chip" compacto para cada TableGroup colapsado, en lugar del
+  // marco expandido. Usa el mismo id que el marco ('grp_'+nombre) para que
+  // solo exista una representación activa por grupo a la vez.
+  function renderCollapsedChips() {
+    const groups = (state.parsed && state.parsed.groups) || [];
+    const w = 220, h = 56;
+    groups.forEach(g => {
+      if (!state.collapsedGroups.has(g.name)) return;
+      let sumX = 0, sumY = 0, count = 0;
+      g.tables.forEach(t => {
+        const p = state.positions[t];
+        if (p) { sumX += p.x; sumY += p.y; count++; }
+      });
+      const x = count ? sumX / count : 80;
+      const y = count ? sumY / count : 80;
+      const id = groupElementId(g.name);
+
+      const el = new joint.dia.Element({ id, type: 'app.Group', position: { x, y }, size: { width: w, height: h }, z: 0 });
+      el.markup = [
+        { tagName: 'rect', selector: 'frame' },
+        { tagName: 'text', selector: 'label' },
+        { tagName: 'text', selector: 'hint' }
+      ];
+      el.attr('frame', {
+        width: w, height: h, fill: '#1e293b', stroke: '#6366f1',
+        strokeWidth: 1.5, strokeDasharray: '6,4', rx: 12, ry: 12, cursor: 'pointer'
+      });
+      el.attr('label', {
+        text: '▸ ' + g.name, x: 14, y: 24, fill: '#a5b4fc', fontSize: 12,
+        fontWeight: '700', fontFamily: 'Consolas, Menlo, monospace', cursor: 'pointer'
+      });
+      el.attr('hint', {
+        text: g.tables.length + ' tabla(s) ocultas — clic para expandir', x: 14, y: 40,
+        fill: '#94a3b8', fontSize: 9.5, fontFamily: 'Consolas, Menlo, monospace', cursor: 'pointer'
+      });
+      el.set('groupName', g.name, { silent: true });
+      el.set('collapsed', true, { silent: true });
+      graph.addCell(el);
+    });
+  }
+
+  function toggleGroupCollapse(name) {
+    if (state.collapsedGroups.has(name)) state.collapsedGroups.delete(name);
+    else state.collapsedGroups.add(name);
+    renderGraph(getDbml(), { keepPositions: true });
+  }
+
+  // Cualquier cambio de posición de una tabla recalcula los marcos de grupo
+  // que la contengan (cubre arrastre individual, en grupo y layouts).
+  const SNAP_GRID = 20;
+
+  graph.on('change:position', function (cell, newPosition, opt) {
+    if (cell.get('type') === 'app.Group') return; // evita recursión al mover el propio marco
+    if (state.snapEnabled && !opt.snapped) {
+      const sx = Math.round(newPosition.x / SNAP_GRID) * SNAP_GRID;
+      const sy = Math.round(newPosition.y / SNAP_GRID) * SNAP_GRID;
+      if (sx !== newPosition.x || sy !== newPosition.y) {
+        cell.position(sx, sy, { snapped: true });
+        return; // el position() de arriba vuelve a disparar este mismo evento ya ajustado
+      }
+    }
+    recomputeGroupFrames();
+    updateMinimap();
+  });
+
+  elBtnSnap.classList.toggle('active', state.snapEnabled);
+  elBtnSnap.addEventListener('click', function () {
+    state.snapEnabled = !state.snapEnabled;
+    localStorage.setItem(LS_KEYS.snap, state.snapEnabled ? '1' : '0');
+    elBtnSnap.classList.toggle('active', state.snapEnabled);
+  });
+
+  elBtnMultiSelect.addEventListener('click', function () {
+    state.multiSelectMode = !state.multiSelectMode;
+    elBtnMultiSelect.classList.toggle('active', state.multiSelectMode);
+  });
+
+  function layoutAuto() {
+    const els = getElements();
+    const cols = Math.max(1, Math.ceil(Math.sqrt(els.length)));
+    const gapX = 280, gapY = 220;
+    els.forEach((el, i) => {
+      const col = i % cols, row = Math.floor(i / cols);
+      animateTo(el, 60 + col * gapX, 60 + row * gapY);
+    });
+  }
+
+  function layoutByColor() {
+    const groups = {};
+    getElements().forEach(el => {
+      const c = el.attr('header/fill') || '#000';
+      (groups[c] = groups[c] || []).push(el);
+    });
+    let gx = 60;
+    Object.keys(groups).forEach(color => {
+      let gy = 60;
+      groups[color].forEach(el => {
+        animateTo(el, gx, gy);
+        gy += el.size().height + 40;
+      });
+      gx += 300;
+    });
+  }
+
+  function layoutByName() {
+    const groups = {};
+    getElements().forEach(el => {
+      const name = el.get('tableName') || '';
+      const prefix = name.split('_')[0];
+      (groups[prefix] = groups[prefix] || []).push(el);
+    });
+    let gx = 60;
+    Object.keys(groups).forEach(prefix => {
+      let gy = 60;
+      groups[prefix].forEach(el => {
+        animateTo(el, gx, gy);
+        gy += el.size().height + 40;
+      });
+      gx += 300;
+    });
+  }
+
+  // Layout de fuerza dirigida (Fruchterman-Reingold): cada tabla se repele de
+  // todas las demás, y cada relación actúa como un resorte que atrae a las
+  // tablas conectadas. Se simulan varias iteraciones con "enfriamiento"
+  // progresivo hasta estabilizar, y al final se resuelven los solapes
+  // residuales empujando separadas las cajas que aún se pisan.
+  function layoutByRelation() {
+    const els = getElements();
+    if (els.length < 2) return;
+
+    const elById = {};
+    els.forEach(el => { elById[el.id] = el; });
+
+    const byName = {};
+    els.forEach(el => byName[el.get('tableName')] = el);
+
+    const edges = [];
+    state.parsed.refs.forEach(ref => {
+      const a = byName[ref.from.table], b = byName[ref.to.table];
+      if (a && b && a.id !== b.id) edges.push([a.id, b.id]);
+    });
+
+    // estado físico: se parte de las posiciones actuales (mejor punto de
+    // partida que posiciones aleatorias, converge más rápido y de forma
+    // más predecible entre corridas sucesivas)
+    const nodes = {};
+    els.forEach(el => {
+      const p = el.position(), s = el.size();
+      nodes[el.id] = { x: p.x + s.width / 2, y: p.y + s.height / 2, w: s.width, h: s.height, dx: 0, dy: 0 };
+    });
+    const ids = Object.keys(nodes);
+    const n = ids.length;
+
+    const area = n * 62000; // el área objetivo escala con la cantidad de tablas
+    const k = Math.sqrt(area / n); // distancia "ideal" de equilibrio entre nodos
+    const iterations = 300;
+    let temperature = Math.sqrt(area) / 8;
+
+    for (let iter = 0; iter < iterations; iter++) {
+      // fuerza de repulsión entre cada par de tablas (como cargas iguales)
+      for (let i = 0; i < n; i++) {
+        const a = nodes[ids[i]];
+        a.dx = 0; a.dy = 0;
+        for (let j = 0; j < n; j++) {
+          if (i === j) continue;
+          const b = nodes[ids[j]];
+          const dx = a.x - b.x, dy = a.y - b.y;
+          const dist = Math.sqrt(dx * dx + dy * dy) || 0.01;
+          const force = (k * k) / dist;
+          a.dx += (dx / dist) * force;
+          a.dy += (dy / dist) * force;
+        }
+      }
+      // fuerza de atracción tipo resorte a lo largo de cada relación
+      edges.forEach(([idA, idB]) => {
+        const a = nodes[idA], b = nodes[idB];
+        const dx = a.x - b.x, dy = a.y - b.y;
+        const dist = Math.sqrt(dx * dx + dy * dy) || 0.01;
+        const force = (dist * dist) / k;
+        const fx = (dx / dist) * force, fy = (dy / dist) * force;
+        a.dx -= fx; a.dy -= fy;
+        b.dx += fx; b.dy += fy;
+      });
+      // aplica el desplazamiento, acotado por la "temperatura" actual
+      for (let i = 0; i < n; i++) {
+        const a = nodes[ids[i]];
+        const disp = Math.sqrt(a.dx * a.dx + a.dy * a.dy) || 0.01;
+        const limited = Math.min(disp, temperature);
+        a.x += (a.dx / disp) * limited;
+        a.y += (a.dy / disp) * limited;
+      }
+      temperature *= 0.97; // enfriamiento geométrico: cada vez se mueve menos
+    }
+
+    // resolución de solapes: empuja separadas las cajas que aún se pisan
+    // (Fruchterman-Reingold trata los nodos como puntos, no como rectángulos)
+    for (let pass = 0; pass < 6; pass++) {
+      for (let i = 0; i < n; i++) {
+        for (let j = i + 1; j < n; j++) {
+          const a = nodes[ids[i]], b = nodes[ids[j]];
+          const pad = 30;
+          const halfW = (a.w + b.w) / 2 + pad, halfH = (a.h + b.h) / 2 + pad;
+          const dx = a.x - b.x, dy = a.y - b.y;
+          const overlapX = halfW - Math.abs(dx), overlapY = halfH - Math.abs(dy);
+          if (overlapX > 0 && overlapY > 0) {
+            if (overlapX < overlapY) {
+              const push = (overlapX / 2) * (dx >= 0 ? 1 : -1);
+              a.x += push; b.x -= push;
+            } else {
+              const push = (overlapY / 2) * (dy >= 0 ? 1 : -1);
+              a.y += push; b.y -= push;
+            }
+          }
+        }
+      }
+    }
+
+    // normaliza a coordenadas positivas y aplica las posiciones finales
+    let minX = Infinity, minY = Infinity;
+    ids.forEach(id => {
+      const node = nodes[id];
+      minX = Math.min(minX, node.x - node.w / 2);
+      minY = Math.min(minY, node.y - node.h / 2);
+    });
+    const offsetX = 60 - minX, offsetY = 60 - minY;
+    ids.forEach(id => {
+      const node = nodes[id];
+      animateTo(elById[id], node.x - node.w / 2 + offsetX, node.y - node.h / 2 + offsetY);
+    });
+  }
+
+  function layoutByCentrality() {
+    const els = getElements();
+    const degree = {};
+    els.forEach(el => degree[el.get('tableName')] = 0);
+    state.parsed.refs.forEach(ref => {
+      if (degree[ref.from.table] !== undefined) degree[ref.from.table]++;
+      if (degree[ref.to.table] !== undefined) degree[ref.to.table]++;
+    });
+    const sorted = els.slice().sort((a, b) => degree[b.get('tableName')] - degree[a.get('tableName')]);
+
+    const centerX = 60 + (Math.ceil(Math.sqrt(els.length)) * 280) / 2;
+    const centerY = 60 + (Math.ceil(Math.sqrt(els.length)) * 220) / 2;
+
+    sorted.forEach((el, i) => {
+      if (i === 0) { animateTo(el, centerX, centerY); return; }
+      const ring = Math.ceil((i) / 6);
+      const angleStep = (2 * Math.PI) / Math.min(6, els.length - 1);
+      const angle = ((i - 1) % 6) * angleStep;
+      const radius = ring * 260;
+      animateTo(el, centerX + radius * Math.cos(angle) - 100, centerY + radius * Math.sin(angle) - 60);
+    });
+  }
+
+  function layoutBySize() {
+    const els = getElements().slice().sort((a, b) => {
+      const fa = (a.get('markup') || []).length, fb = (b.get('markup') || []).length;
+      return fb - fa;
+    });
+    const cols = Math.max(1, Math.ceil(Math.sqrt(els.length)));
+    const gapX = 300, gapY = 240;
+    els.forEach((el, i) => {
+      const col = i % cols, row = Math.floor(i / cols);
+      animateTo(el, 60 + col * gapX, 60 + row * gapY);
+    });
+  }
+
+  function applyLayout(mode, opts) {
+    opts = opts || {};
+    state.layoutMode = mode;
+    localStorage.setItem(LS_KEYS.layout, mode);
+    layoutButtons.forEach(b => b.classList.toggle('active', b.dataset.layout === mode));
+
+    switch (mode) {
+      case 'color': layoutByColor(); break;
+      case 'name': layoutByName(); break;
+      case 'relation': layoutByRelation(); break;
+      case 'centrality': layoutByCentrality(); break;
+      case 'size': layoutBySize(); break;
+      default: layoutAuto(); break;
+    }
+    if (!opts.silent) saveAllPositions();
+    else saveAllPositions();
+  }
+
+  layoutButtons.forEach(btn => {
+    btn.addEventListener('click', () => applyLayout(btn.dataset.layout));
+  });
+
+  /* =========================================================================
+     6b. ALINEAR Y DISTRIBUIR SELECCIÓN
+     ========================================================================= */
+  function selectedElementsList() {
+    return Array.from(state.selected).map(id => graph.getCell(id)).filter(Boolean);
+  }
+
+  function selectionBBox(els) {
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    els.forEach(el => {
+      const p = el.position(), s = el.size();
+      minX = Math.min(minX, p.x); minY = Math.min(minY, p.y);
+      maxX = Math.max(maxX, p.x + s.width); maxY = Math.max(maxY, p.y + s.height);
+    });
+    return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+  }
+
+  // Mueve la selección con precisión exacta (bypassea el snap-to-grid con
+  // {snapped:true} para que el nudge de 1px no quede anulado por el imán).
+  function nudgeSelection(dx, dy) {
+    const els = selectedElementsList();
+    if (!els.length) return;
+    els.forEach(el => {
+      const p = el.position();
+      el.position(p.x + dx, p.y + dy, { snapped: true });
+    });
+    saveAllPositions();
+  }
+
+  function alignSelection(mode) {
+    const els = selectedElementsList();
+    if (els.length < 2) return;
+    const bbox = selectionBBox(els);
+    els.forEach(el => {
+      const p = el.position(), s = el.size();
+      let x = p.x, y = p.y;
+      switch (mode) {
+        case 'left': x = bbox.x; break;
+        case 'right': x = bbox.x + bbox.width - s.width; break;
+        case 'centerx': x = bbox.x + (bbox.width - s.width) / 2; break;
+        case 'top': y = bbox.y; break;
+        case 'bottom': y = bbox.y + bbox.height - s.height; break;
+        case 'centery': y = bbox.y + (bbox.height - s.height) / 2; break;
+      }
+      el.position(x, y);
+    });
+    saveAllPositions();
+  }
+
+  function distributeSelection(axis) {
+    const els = selectedElementsList();
+    if (els.length < 3) return;
+    if (axis === 'h') {
+      els.sort((a, b) => a.position().x - b.position().x);
+      const first = els[0], last = els[els.length - 1];
+      const start = first.position().x + first.size().width / 2;
+      const end = last.position().x + last.size().width / 2;
+      const step = (end - start) / (els.length - 1);
+      els.forEach((el, i) => {
+        if (i === 0 || i === els.length - 1) return;
+        const centerX = start + step * i;
+        el.position(centerX - el.size().width / 2, el.position().y);
+      });
+    } else {
+      els.sort((a, b) => a.position().y - b.position().y);
+      const first = els[0], last = els[els.length - 1];
+      const start = first.position().y + first.size().height / 2;
+      const end = last.position().y + last.size().height / 2;
+      const step = (end - start) / (els.length - 1);
+      els.forEach((el, i) => {
+        if (i === 0 || i === els.length - 1) return;
+        const centerY = start + step * i;
+        el.position(el.position().x, centerY - el.size().height / 2);
+      });
+    }
+    saveAllPositions();
+  }
+
+  document.getElementById('align-left').addEventListener('click', () => alignSelection('left'));
+  document.getElementById('align-right').addEventListener('click', () => alignSelection('right'));
+  document.getElementById('align-centerx').addEventListener('click', () => alignSelection('centerx'));
+  document.getElementById('align-top').addEventListener('click', () => alignSelection('top'));
+  document.getElementById('align-bottom').addEventListener('click', () => alignSelection('bottom'));
+  document.getElementById('align-centery').addEventListener('click', () => alignSelection('centery'));
+  document.getElementById('align-disth').addEventListener('click', () => distributeSelection('h'));
+  document.getElementById('align-distv').addEventListener('click', () => distributeSelection('v'));
+
+  function updateAlignButtonsUI() {
+    const n = state.selected.size;
+    alignButtons.forEach(btn => {
+      const needsThree = btn.id === 'align-disth' || btn.id === 'align-distv';
+      btn.disabled = needsThree ? n < 3 : n < 2;
+    });
+    elBtnDuplicate.disabled = n < 1;
+    elBtnDeleteSel.disabled = n < 1;
+    elBtnZoomSel.disabled = n < 1;
+  }
+
+  /* =========================================================================
+     7. SELECCIÓN MÚLTIPLE, ARRASTRE DE GRUPO Y PERSISTENCIA DE POSICIONES
+     ========================================================================= */
+  function highlightElement(id) {
+    const el = graph.getCell(id);
+    if (!el) return;
+    el.attr('body/stroke', '#818cf8');
+    el.attr('body/strokeWidth', 3);
+  }
+  function unhighlightElement(id) {
+    const el = graph.getCell(id);
+    if (!el) return;
+    const th = THEMES[state.theme];
+    el.attr('body/stroke', th.stroke);
+    el.attr('body/strokeWidth', th.strokeWidth);
+  }
+  function updateSelectionUI() {
+    if (state.selected.size > 0) {
+      elBtnClearSel.classList.remove('hidden');
+      elSelectionCount.textContent = state.selected.size;
+    } else {
+      elBtnClearSel.classList.add('hidden');
+      elSelectionCount.textContent = '';
+    }
+    updateAlignButtonsUI();
+    updateMinimap();
+  }
+  function selectElement(id) {
+    if (state.selected.has(id)) return;
+    state.selected.add(id);
+    highlightElement(id);
+    updateSelectionUI();
+  }
+  function deselectElement(id) {
+    if (!state.selected.has(id)) return;
+    state.selected.delete(id);
+    unhighlightElement(id);
+    updateSelectionUI();
+  }
+  function toggleSelectElement(id) {
+    if (state.selected.has(id)) deselectElement(id); else selectElement(id);
+  }
+  function clearSelection() {
+    state.selected.forEach(id => unhighlightElement(id));
+    state.selected.clear();
+    state.activeColorFilter = null;
+    Array.from(elColorSwatches.children).forEach(b => b.classList.remove('active'));
+    updateSelectionUI();
+  }
+  elBtnClearSel.addEventListener('click', clearSelection);
+  document.addEventListener('keydown', function (evt) {
+    if (evt.key === 'Escape') clearSelection();
+  });
+
+  /* --- Selección y arrastre (individual o en grupo) de tablas --- */
+  paper.on('element:pointerdown', function (elementView, evt) {
+    if (elementView.model.get('type') === 'app.Group') return; // los marcos de grupo no son seleccionables
+    const id = elementView.model.id;
+    const isModifier = evt.shiftKey || evt.ctrlKey || evt.metaKey || state.multiSelectMode;
+
+    if (isModifier) {
+      toggleSelectElement(id);
+      state.dragGroup = null; // clic con modificador solo alterna la selección
+      return;
+    }
+
+    if (!state.selected.has(id)) {
+      clearSelection();
+      selectElement(id);
+    }
+
+    if (state.selected.size > 1) {
+      const startPositions = {};
+      state.selected.forEach(selId => {
+        const el = graph.getCell(selId);
+        if (el) startPositions[selId] = el.position();
+      });
+      state.dragGroup = { originId: id, originStart: elementView.model.position(), startPositions };
+    } else {
+      state.dragGroup = null;
+    }
+  });
+
+  paper.on('element:pointermove', function (elementView) {
+    const dg = state.dragGroup;
+    if (!dg || elementView.model.id !== dg.originId) return;
+    const cur = elementView.model.position();
+    const dx = cur.x - dg.originStart.x;
+    const dy = cur.y - dg.originStart.y;
+    Object.keys(dg.startPositions).forEach(id => {
+      if (id === dg.originId) return;
+      const el = graph.getCell(id);
+      if (!el) return;
+      const sp = dg.startPositions[id];
+      el.position(sp.x + dx, sp.y + dy);
+    });
+  });
+
+  paper.on('element:pointerup', function () {
+    state.dragGroup = null;
+    saveAllPositions();
+  });
+
+  /* --- Selección por recuadro (rubber-band): mantener Shift + arrastrar el fondo --- */
+  let rubberBandEl = null;
+
+  function beginRubberBand(clientX, clientY) {
+    const rect = elPaperContainer.getBoundingClientRect();
+    state.rubberBand = { x0: clientX - rect.left, y0: clientY - rect.top, rectPx: null };
+    rubberBandEl = document.createElement('div');
+    rubberBandEl.id = 'rubber-band';
+    elPaperContainer.appendChild(rubberBandEl);
+    updateRubberBand(clientX, clientY);
+  }
+
+  function updateRubberBand(clientX, clientY) {
+    if (!rubberBandEl || !state.rubberBand) return;
+    const rect = elPaperContainer.getBoundingClientRect();
+    const x1 = clientX - rect.left, y1 = clientY - rect.top;
+    const x0 = state.rubberBand.x0, y0 = state.rubberBand.y0;
+    const left = Math.min(x0, x1), top = Math.min(y0, y1);
+    const w = Math.abs(x1 - x0), h = Math.abs(y1 - y0);
+    rubberBandEl.style.left = left + 'px';
+    rubberBandEl.style.top = top + 'px';
+    rubberBandEl.style.width = w + 'px';
+    rubberBandEl.style.height = h + 'px';
+    state.rubberBand.rectPx = { left, top, w, h };
+  }
+
+  function endRubberBand() {
+    if (rubberBandEl) { rubberBandEl.remove(); rubberBandEl = null; }
+    const rb = state.rubberBand;
+    state.rubberBand = null;
+    if (!rb || !rb.rectPx || rb.rectPx.w < 4 || rb.rectPx.h < 4) return;
+
+    const tr = paper.translate();
+    const sc = paper.scale();
+    const toLocal = (px, py) => ({ x: (px - tr.tx) / sc.sx, y: (py - tr.ty) / sc.sy });
+    const p0 = toLocal(rb.rectPx.left, rb.rectPx.top);
+    const p1 = toLocal(rb.rectPx.left + rb.rectPx.w, rb.rectPx.top + rb.rectPx.h);
+    const sel = {
+      x: Math.min(p0.x, p1.x), y: Math.min(p0.y, p1.y),
+      width: Math.abs(p1.x - p0.x), height: Math.abs(p1.y - p0.y)
+    };
+
+    clearSelection();
+    getElements().forEach(el => {
+      const b = el.getBBox();
+      const intersects = sel.x < b.x + b.width && sel.x + sel.width > b.x &&
+                          sel.y < b.y + b.height && sel.y + sel.height > b.y;
+      if (intersects) selectElement(el.id);
+    });
+  }
+
+  /* =========================================================================
+     7b. SWATCHES DE COLOR (headercolor) — seleccionar todas las tablas de un color
+     ========================================================================= */
+  function updateColorSwatches() {
+    const groups = {}; // color -> [elementId]
+    graph.getElements().forEach(el => {
+      const color = el.attr('header/fill');
+      if (!color) return;
+      (groups[color] = groups[color] || []).push(el.id);
+    });
+
+    elColorSwatches.innerHTML = '';
+    Object.keys(groups).forEach(color => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'swatch-btn' + (state.activeColorFilter === color ? ' active' : '');
+      btn.style.background = color;
+      btn.title = groups[color].length + ' tabla(s) con este color — clic para seleccionarlas';
+      btn.addEventListener('click', function () {
+        if (state.activeColorFilter === color) { clearSelection(); return; }
+        clearSelection();
+        state.activeColorFilter = color;
+        groups[color].forEach(id => selectElement(id));
+        Array.from(elColorSwatches.children).forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+      });
+      elColorSwatches.appendChild(btn);
+    });
+  }
+
+  /* =========================================================================
+     7c. DUPLICAR / ELIMINAR SELECCIÓN — edita el DBML fuente directamente
+     ========================================================================= */
+  function escapeRegex(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+
+  // Ubica el bloque "Table nombre { ... }" o "Enum nombre { ... }" en el texto
+  // fuente ACTUAL (no en una copia parseada previamente), contando llaves para
+  // encontrar el cierre correcto incluso con bloques indexes{} anidados.
+  function findBlockByKeyword(sourceText, keyword, name) {
+    const re = new RegExp(keyword + '\\s+"?' + escapeRegex(name) + '"?\\s*(?:as\\s+[a-zA-Z0-9_]+)?\\s*(?:\\[[^\\]]*\\])?\\s*\\{', 'i');
+    const m = re.exec(sourceText);
+    if (!m) return null;
+    const openIdx = sourceText.indexOf('{', m.index);
+    if (openIdx === -1) return null;
+    let depth = 0, i = openIdx;
+    for (; i < sourceText.length; i++) {
+      if (sourceText[i] === '{') depth++;
+      else if (sourceText[i] === '}') { depth--; if (depth === 0) break; }
+    }
+    let end = i + 1;
+    if (sourceText[end] === '\n') end += 1;
+    return { start: m.index, end, keyword };
+  }
+
+  function findNamedBlockInSource(sourceText, name) {
+    return findBlockByKeyword(sourceText, 'Table', name) || findBlockByKeyword(sourceText, 'Enum', name);
+  }
+
+  function generateUniqueTableName(base, sourceText) {
+    let n = 1;
+    let candidate = base + '_copy';
+    while (new RegExp('\\b(Table|Enum)\\s+"?' + escapeRegex(candidate) + '"?\\b').test(sourceText)) {
+      n += 1;
+      candidate = base + '_copy' + n;
+    }
+    return candidate;
+  }
+
+  // Aplica un texto DBML completo nuevo de forma inmediata (sin esperar el
+  // debounce normal de tipeo) y deja que el listener de CodeMirror también
+  // corra en segundo plano — pushHistory ya evita duplicados.
+  function applyDbmlEdit(newFullText) {
+    setDbml(newFullText);
+    localStorage.setItem(LS_KEYS.dbml, newFullText);
+    pushHistory(newFullText);
+    renderGraph(newFullText);
+    setStatus('saved');
+  }
+
+  function deleteSelectedTables() {
+    const names = selectedElementsList().map(el => el.get('tableName')).filter(Boolean);
+    if (!names.length) return;
+    let text = getDbml();
+    names.forEach(name => {
+      const block = findNamedBlockInSource(text, name);
+      if (block) text = text.slice(0, block.start) + text.slice(block.end);
+    });
+    // limpia además cualquier línea "Ref:" que mencione alguna tabla eliminada
+    const refLineRe = /^\s*Ref\s*(?:[a-zA-Z0-9_]+)?\s*:\s*([a-zA-Z0-9_]+)\.[a-zA-Z0-9_]+\s*(?:<>|>|<|-)\s*([a-zA-Z0-9_]+)\./i;
+    text = text.split('\n').filter(line => {
+      const m = line.match(refLineRe);
+      if (!m) return true;
+      return names.indexOf(m[1]) === -1 && names.indexOf(m[2]) === -1;
+    }).join('\n');
+
+    clearSelection();
+    applyDbmlEdit(text);
+  }
+
+  function duplicateSelectedTables() {
+    const els = selectedElementsList().filter(el => el.get('tableName'));
+    if (!els.length) return;
+    let text = getDbml();
+    const pairs = [];
+    els.forEach(el => {
+      const name = el.get('tableName');
+      const block = findNamedBlockInSource(text, name);
+      if (!block) return;
+      const blockText = text.slice(block.start, block.end);
+      const newName = generateUniqueTableName(name, text);
+      const renamed = blockText.replace(
+        new RegExp('^(' + block.keyword + ')(\\s+)"?' + escapeRegex(name) + '"?'),
+        '$1$2' + newName
+      );
+      text = text.slice(0, block.end) + '\n' + renamed + text.slice(block.end);
+      pairs.push({ oldName: name, newName: newName });
+    });
+    if (!pairs.length) return;
+
+    applyDbmlEdit(text);
+
+    clearSelection();
+    pairs.forEach(p => {
+      const orig = graph.getCell('tbl_' + p.oldName);
+      const copy = graph.getCell('tbl_' + p.newName);
+      if (orig && copy) {
+        const pos = orig.position();
+        copy.position(pos.x + 40, pos.y + 40);
+        selectElement(copy.id);
+      }
+    });
+    saveAllPositions();
+  }
+
+  elBtnDuplicate.addEventListener('click', duplicateSelectedTables);
+  elBtnDeleteSel.addEventListener('click', deleteSelectedTables);
+
+  const ARROW_DELTAS = { ArrowUp: [0, -1], ArrowDown: [0, 1], ArrowLeft: [-1, 0], ArrowRight: [1, 0] };
+
+  document.addEventListener('keydown', function (evt) {
+    const active = document.activeElement;
+    const tag = active ? active.tagName : '';
+    const inCodeMirror = active && active.closest && active.closest('.CodeMirror');
+    const inFormField = tag === 'INPUT' || tag === 'TEXTAREA' || !!inCodeMirror;
+    if (inFormField || !state.selected.size) return;
+
+    if (evt.key === 'Delete' || evt.key === 'Backspace') {
+      evt.preventDefault();
+      deleteSelectedTables();
+    } else if ((evt.ctrlKey || evt.metaKey) && evt.key.toLowerCase() === 'd') {
+      evt.preventDefault();
+      duplicateSelectedTables();
+    } else if (ARROW_DELTAS[evt.key]) {
+      evt.preventDefault();
+      const step = evt.shiftKey ? SNAP_GRID : 1;
+      const [dx, dy] = ARROW_DELTAS[evt.key];
+      nudgeSelection(dx * step, dy * step);
+    } else if (evt.key.toLowerCase() === 'f' && !evt.ctrlKey && !evt.metaKey) {
+      evt.preventDefault();
+      zoomToSelection();
+    }
+  });
+
+  /* =========================================================================
+     7d. EDICIÓN INVERSA — doble clic en una tabla del lienzo para
+     renombrarla o editar sus campos, sincronizado con el DBML fuente
+     ========================================================================= */
+  function buildTableBlockText(name, color, fields) {
+    const settings = color ? ' [headercolor: ' + color + ']' : '';
+    const lines = fields.map(f => '  ' + f.name + ' ' + (f.type || 'varchar') + (f.pk ? ' [pk]' : ''));
+    return 'Table ' + name + settings + ' {\n' + lines.join('\n') + '\n}';
+  }
+
+  function buildEnumBlockText(name, color, values) {
+    const settings = color ? ' [headercolor: ' + color + ']' : '';
+    const lines = values.map(v => '  ' + v.name);
+    return 'Enum ' + name + settings + ' {\n' + lines.join('\n') + '\n}';
+  }
+
+  function deleteTableByName(name) {
+    let text = getDbml();
+    const block = findNamedBlockInSource(text, name);
+    if (block) text = text.slice(0, block.start) + text.slice(block.end);
+    const refLineRe = /^\s*Ref\s*(?:[a-zA-Z0-9_]+)?\s*:\s*([a-zA-Z0-9_]+)\.[a-zA-Z0-9_]+\s*(?:<>|>|<|-)\s*([a-zA-Z0-9_]+)\./i;
+    text = text.split('\n').filter(line => {
+      const m = line.match(refLineRe);
+      if (!m) return true;
+      return m[1] !== name && m[2] !== name;
+    }).join('\n');
+    clearSelection();
+    applyDbmlEdit(text);
+  }
+
+  function createFieldRow(field, isEnum) {
+    const row = document.createElement('div');
+    row.className = 'te-field-row';
+
+    const nameInput = document.createElement('input');
+    nameInput.type = 'text';
+    nameInput.className = 'te-fname';
+    nameInput.placeholder = isEnum ? 'valor' : 'nombre_campo';
+    nameInput.value = field ? field.name : '';
+    row.appendChild(nameInput);
+
+    let typeInput = null, pkInput = null;
+    if (!isEnum) {
+      typeInput = document.createElement('input');
+      typeInput.type = 'text';
+      typeInput.className = 'te-ftype';
+      typeInput.placeholder = 'tipo (ej. varchar)';
+      typeInput.value = field ? field.type : '';
+      row.appendChild(typeInput);
+
+      pkInput = document.createElement('input');
+      pkInput.type = 'checkbox';
+      pkInput.className = 'te-fpk';
+      pkInput.title = 'Llave primaria (PK)';
+      pkInput.checked = !!(field && field.pk);
+      row.appendChild(pkInput);
+    }
+
+    const delBtn = document.createElement('button');
+    delBtn.type = 'button';
+    delBtn.className = 'te-fdel';
+    delBtn.textContent = '✕';
+    delBtn.title = 'Quitar campo';
+    delBtn.addEventListener('click', function () { row.remove(); });
+    row.appendChild(delBtn);
+
+    row.__getField = function () {
+      return {
+        name: nameInput.value.trim(),
+        type: typeInput ? typeInput.value.trim() : '',
+        pk: pkInput ? pkInput.checked : false
+      };
+    };
+    return row;
+  }
+
+  function openTableEditor(el) {
+    const name = el.get('tableName');
+    if (!name) return;
+    const tableData = (state.parsed.tables || []).find(t => t.name === name);
+    if (!tableData) return;
+
+    state.tableEditorContext = { name: name, isEnum: !!tableData.isEnum };
+    elTeTitle.textContent = tableData.isEnum ? 'Editar enum' : 'Editar tabla';
+    elTeTypeBadge.textContent = tableData.isEnum ? 'ENUM' : 'TABLE';
+    elTeName.value = name;
+    elTeFieldsLabel.textContent = tableData.isEnum ? 'Valores' : 'Campos';
+    elTeFields.innerHTML = '';
+    tableData.fields.forEach(f => elTeFields.appendChild(createFieldRow(f, tableData.isEnum)));
+    elTeAddField.textContent = tableData.isEnum ? '＋ Agregar valor' : '＋ Agregar campo';
+
+    elTeOverlay.classList.remove('hidden');
+    setTimeout(function () { elTeName.focus(); elTeName.select(); }, 30);
+  }
+
+  function hideTableEditor() {
+    elTeOverlay.classList.add('hidden');
+    state.tableEditorContext = null;
+  }
+
+  paper.on('element:pointerdblclick', function (elementView) {
+    if (elementView.model.get('type') === 'app.Group') return;
+    openTableEditor(elementView.model);
+  });
+
+  // Clic sobre el título de un marco/chip de TableGroup: colapsa o expande.
+  // Se restringe al texto del título (no a todo el recuadro) para no
+  // interferir con el paneo o la selección por recuadro dentro del grupo.
+  paper.on('element:pointerclick', function (elementView, evt) {
+    const model = elementView.model;
+    if (model.get('type') !== 'app.Group') return;
+    const name = model.get('groupName');
+    if (!name) return;
+    const selector = evt.target && evt.target.getAttribute && evt.target.getAttribute('joint-selector');
+    if (selector !== 'label' && selector !== 'hint') return;
+    toggleGroupCollapse(name);
+  });
+
+  elTeAddField.addEventListener('click', function () {
+    if (!state.tableEditorContext) return;
+    const row = createFieldRow(null, state.tableEditorContext.isEnum);
+    elTeFields.appendChild(row);
+    row.querySelector('input').focus();
+  });
+
+  elTeCancel.addEventListener('click', hideTableEditor);
+
+  elTeDelete.addEventListener('click', function () {
+    if (!state.tableEditorContext) return;
+    const name = state.tableEditorContext.name;
+    hideTableEditor();
+    deleteTableByName(name);
+  });
+
+  elTeSave.addEventListener('click', async function () {
+    if (!state.tableEditorContext) return;
+    const ctx = state.tableEditorContext;
+    const newName = elTeName.value.trim();
+    if (!newName) { await showAlert('Nombre requerido', 'Debes indicar un nombre.'); return; }
+
+    const rows = Array.from(elTeFields.children);
+    const fields = rows.map(r => r.__getField()).filter(f => f.name);
+    if (!fields.length) {
+      await showAlert('Faltan campos', ctx.isEnum ? 'Agrega al menos un valor.' : 'Agrega al menos un campo.');
+      return;
+    }
+
+    let text = getDbml();
+    const block = findNamedBlockInSource(text, ctx.name);
+    if (!block) { hideTableEditor(); return; }
+
+    const originalTableData = (state.parsed.tables || []).find(t => t.name === ctx.name);
+    const color = originalTableData ? originalTableData.color : null;
+
+    const newBlockText = ctx.isEnum
+      ? buildEnumBlockText(newName, color, fields)
+      : buildTableBlockText(newName, color, fields);
+
+    text = text.slice(0, block.start) + newBlockText + text.slice(block.end);
+
+    hideTableEditor();
+    applyDbmlEdit(text);
+  });
+
+  /* =========================================================================
+     8. ZOOM Y PANNING
+     ========================================================================= */
+  function setZoom(z, cx, cy) {
+    z = Math.max(0.2, Math.min(2.5, z));
+    const rect = elPaperContainer.getBoundingClientRect();
+    const ox = cx !== undefined ? cx - rect.left : rect.width / 2;
+    const oy = cy !== undefined ? cy - rect.top : rect.height / 2;
+    paper.scale(z, z);
+    state.zoom = z;
+    elZoomLabel.textContent = Math.round(z * 100) + '%';
+    updateMinimap();
+  }
+
+  elPaperContainer.addEventListener('wheel', function (evt) {
+    evt.preventDefault();
+    const delta = evt.deltaY < 0 ? 0.1 : -0.1;
+    setZoom(state.zoom + delta, evt.clientX, evt.clientY);
+  }, { passive: false });
+
+  // Pinch-to-zoom (dos dedos) para pantallas táctiles
+  function touchDistance(touches) {
+    const dx = touches[0].clientX - touches[1].clientX;
+    const dy = touches[0].clientY - touches[1].clientY;
+    return Math.sqrt(dx * dx + dy * dy);
+  }
+  let pinchStartDist = null, pinchStartZoom = 1;
+  elPaperContainer.addEventListener('touchstart', function (evt) {
+    if (evt.touches.length === 2) {
+      pinchStartDist = touchDistance(evt.touches);
+      pinchStartZoom = state.zoom;
+      // dos dedos = pinch, no paneo: cancela cualquier paneo/recuadro en curso
+      state.panning = false;
+      elPaperContainer.classList.remove('panning');
+    }
+  }, { passive: true });
+  elPaperContainer.addEventListener('touchmove', function (evt) {
+    if (evt.touches.length === 2 && pinchStartDist) {
+      evt.preventDefault();
+      const dist = touchDistance(evt.touches);
+      const cx = (evt.touches[0].clientX + evt.touches[1].clientX) / 2;
+      const cy = (evt.touches[0].clientY + evt.touches[1].clientY) / 2;
+      setZoom(pinchStartZoom * (dist / pinchStartDist), cx, cy);
+    }
+  }, { passive: false });
+  elPaperContainer.addEventListener('touchend', function (evt) {
+    if (evt.touches.length < 2) pinchStartDist = null;
+  });
+
+  paper.on('blank:pointerdown', function (evt) {
+    const p = getPointerXY(evt);
+    if (evt.shiftKey || state.multiSelectMode) {
+      beginRubberBand(p.x, p.y);
+      return;
+    }
+    clearSelection();
+    state.panning = true;
+    elPaperContainer.classList.add('panning');
+    const tr = paper.translate();
+    state.panStart = { x: p.x, y: p.y, tx: tr.tx, ty: tr.ty };
+  });
+
+  function handlePointerMove(evt) {
+    const p = getPointerXY(evt);
+    if (state.rubberBand) { evt.preventDefault && evt.preventDefault(); updateRubberBand(p.x, p.y); return; }
+    if (!state.panning) return;
+    evt.preventDefault && evt.preventDefault();
+    const dx = p.x - state.panStart.x;
+    const dy = p.y - state.panStart.y;
+    paper.translate(state.panStart.tx + dx, state.panStart.ty + dy);
+    updateMinimap();
+  }
+  function handlePointerUp() {
+    if (state.rubberBand) endRubberBand();
+    if (state.panning) {
+      state.panning = false;
+      elPaperContainer.classList.remove('panning');
+    }
+  }
+
+  document.addEventListener('mousemove', handlePointerMove);
+  document.addEventListener('touchmove', handlePointerMove, { passive: false });
+  document.addEventListener('mouseup', handlePointerUp);
+  document.addEventListener('touchend', handlePointerUp);
+
+  elBtnZoomIn.addEventListener('click', () => setZoom(state.zoom + 0.15));
+  elBtnZoomOut.addEventListener('click', () => setZoom(state.zoom - 0.15));
+  elBtnZoomFit.addEventListener('click', () => {
+    paper.scaleContentToFit({ padding: 40, maxScale: 1.4, minScale: 0.2 });
+    state.zoom = paper.scale().sx;
+    elZoomLabel.textContent = Math.round(state.zoom * 100) + '%';
+    updateMinimap();
+  });
+
+  function zoomToSelection() {
+    const els = selectedElementsList();
+    if (!els.length) return;
+    const bbox = selectionBBox(els);
+    const pad = 70;
+    const rect = elPaperContainer.getBoundingClientRect();
+    let scale = Math.min(
+      rect.width / (bbox.width + pad * 2),
+      rect.height / (bbox.height + pad * 2),
+      2
+    );
+    scale = Math.max(scale, 0.2);
+    paper.scale(scale, scale);
+    const tx = rect.width / 2 - (bbox.x + bbox.width / 2) * scale;
+    const ty = rect.height / 2 - (bbox.y + bbox.height / 2) * scale;
+    paper.translate(tx, ty);
+    state.zoom = scale;
+    elZoomLabel.textContent = Math.round(scale * 100) + '%';
+    updateMinimap();
+  }
+
+  elBtnZoomSel.addEventListener('click', zoomToSelection);
+
+  /* =========================================================================
+     8b. VISTAS GUARDADAS (5 slots) — guardan posición/zoom/pan del diagrama
+     Un clic  -> carga la vista guardada en ese slot (acción rápida y segura)
+     Doble clic -> guarda la vista actual en ese slot (acción deliberada,
+                   sobrescribe lo que hubiera antes)
+     ========================================================================= */
+  function getViewSnapshot() {
+    const positions = {};
+    getElements().forEach(el => {
+      const name = el.get('tableName');
+      if (name) positions[name] = el.position();
+    });
+    return {
+      translate: paper.translate(),
+      scale: paper.scale(),
+      positions
+    };
+  }
+
+  function flashViewButton(slot, kind) {
+    const btn = viewSlotButtons.find(b => b.dataset.slot === String(slot));
+    if (!btn) return;
+    const cls = 'flash-' + kind;
+    btn.classList.add(cls);
+    setTimeout(() => btn.classList.remove(cls), 500);
+  }
+
+  function updateViewSlotsUI() {
+    viewSlotButtons.forEach(btn => {
+      const has = !!localStorage.getItem(LS_KEYS.viewPrefix + btn.dataset.slot);
+      btn.classList.toggle('has-data', has);
+    });
+  }
+
+  function saveView(slot) {
+    const snap = getViewSnapshot();
+    localStorage.setItem(LS_KEYS.viewPrefix + slot, JSON.stringify(snap));
+    updateViewSlotsUI();
+    flashViewButton(slot, 'save');
+  }
+
+  function loadView(slot) {
+    const raw = localStorage.getItem(LS_KEYS.viewPrefix + slot);
+    if (!raw) { flashViewButton(slot, 'empty'); return; }
+    try {
+      const snap = JSON.parse(raw);
+      if (snap.positions) {
+        getElements().forEach(el => {
+          const p = snap.positions[el.get('tableName')];
+          if (p) el.position(p.x, p.y);
+        });
+        state.positions = Object.assign({}, state.positions, snap.positions);
+        localStorage.setItem(LS_KEYS.positions, JSON.stringify(state.positions));
+      }
+      if (snap.scale) {
+        paper.scale(snap.scale.sx, snap.scale.sy);
+        state.zoom = snap.scale.sx;
+        elZoomLabel.textContent = Math.round(state.zoom * 100) + '%';
+      }
+      if (snap.translate) {
+        paper.translate(snap.translate.tx, snap.translate.ty);
+      }
+      updateMinimap();
+      flashViewButton(slot, 'load');
+    } catch (e) {
+      console.error('[DBML Studio] No se pudo cargar la vista', slot, e);
+      flashViewButton(slot, 'empty');
+    }
+  }
+
+  // Distingue clic simple (cargar) de doble clic (guardar) con un pequeño
+  // margen de espera, para que un doble clic no dispare también la carga.
+  viewSlotButtons.forEach(btn => {
+    const slot = btn.dataset.slot;
+    let clickTimer = null;
+
+    btn.addEventListener('click', function () {
+      if (clickTimer) clearTimeout(clickTimer);
+      clickTimer = setTimeout(function () {
+        loadView(slot);
+        clickTimer = null;
+      }, 260);
+    });
+
+    btn.addEventListener('dblclick', function (evt) {
+      evt.preventDefault();
+      if (clickTimer) { clearTimeout(clickTimer); clickTimer = null; }
+      saveView(slot);
+    });
+  });
+
+  /* =========================================================================
+     8c. MINIMAPA — vista general del diagrama con el viewport actual
+     ========================================================================= */
+  const MM_W = 200, MM_H = 140, MM_PAD = 10;
+  const mmCtx = elMinimapCanvas.getContext('2d');
+  let mmTransform = null; // { scale, offsetX, offsetY } — mapea coords del diagrama -> coords del canvas del minimapa
+
+  function updateMinimap() {
+    if (!state.minimapVisible) return;
+    const tableEls = getElements(); // ya excluye marcos/chips de grupo
+    if (!tableEls.length) {
+      elMinimapPanel.classList.add('hidden');
+      mmTransform = null;
+      return;
+    }
+    elMinimapPanel.classList.remove('hidden');
+
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    tableEls.forEach(el => {
+      const p = el.position(), s = el.size();
+      minX = Math.min(minX, p.x); minY = Math.min(minY, p.y);
+      maxX = Math.max(maxX, p.x + s.width); maxY = Math.max(maxY, p.y + s.height);
+    });
+    const contentW = Math.max(1, maxX - minX), contentH = Math.max(1, maxY - minY);
+    const scale = Math.min((MM_W - MM_PAD * 2) / contentW, (MM_H - MM_PAD * 2) / contentH);
+    const offsetX = MM_PAD + (MM_W - MM_PAD * 2 - contentW * scale) / 2 - minX * scale;
+    const offsetY = MM_PAD + (MM_H - MM_PAD * 2 - contentH * scale) / 2 - minY * scale;
+    mmTransform = { scale, offsetX, offsetY };
+
+    mmCtx.clearRect(0, 0, MM_W, MM_H);
+    mmCtx.fillStyle = '#0f172a';
+    mmCtx.fillRect(0, 0, MM_W, MM_H);
+
+    // tablas/enums como rectángulos en miniatura con su color de cabecera
+    tableEls.forEach(el => {
+      const p = el.position(), s = el.size();
+      const color = el.attr('header/fill') || '#6366f1';
+      const isSel = state.selected.has(el.id);
+      mmCtx.fillStyle = color;
+      mmCtx.globalAlpha = isSel ? 1 : 0.75;
+      mmCtx.fillRect(p.x * scale + offsetX, p.y * scale + offsetY, Math.max(2, s.width * scale), Math.max(2, s.height * scale));
+      if (isSel) {
+        mmCtx.globalAlpha = 1;
+        mmCtx.strokeStyle = '#ffffff';
+        mmCtx.lineWidth = 1;
+        mmCtx.strokeRect(p.x * scale + offsetX, p.y * scale + offsetY, Math.max(2, s.width * scale), Math.max(2, s.height * scale));
+      }
+    });
+    mmCtx.globalAlpha = 1;
+
+    // viewport actual (área visible del lienzo principal)
+    const tr = paper.translate(), sc = paper.scale();
+    const rect = elPaperContainer.getBoundingClientRect();
+    const vx = -tr.tx / sc.sx, vy = -tr.ty / sc.sy;
+    const vw = rect.width / sc.sx, vh = rect.height / sc.sy;
+    mmCtx.strokeStyle = '#818cf8';
+    mmCtx.lineWidth = 1.5;
+    mmCtx.strokeRect(vx * scale + offsetX, vy * scale + offsetY, vw * scale, vh * scale);
+    mmCtx.fillStyle = 'rgba(129,140,248,0.12)';
+    mmCtx.fillRect(vx * scale + offsetX, vy * scale + offsetY, vw * scale, vh * scale);
+  }
+
+  function navigateMinimapTo(clientX, clientY) {
+    if (!mmTransform) return;
+    const canvasRect = elMinimapCanvas.getBoundingClientRect();
+    const cx = clientX - canvasRect.left, cy = clientY - canvasRect.top;
+    const diagramX = (cx - mmTransform.offsetX) / mmTransform.scale;
+    const diagramY = (cy - mmTransform.offsetY) / mmTransform.scale;
+    const rect = elPaperContainer.getBoundingClientRect();
+    const sc = paper.scale();
+    const tx = rect.width / 2 - diagramX * sc.sx;
+    const ty = rect.height / 2 - diagramY * sc.sy;
+    paper.translate(tx, ty);
+    updateMinimap();
+  }
+
+  function mmPointerDown(evt) {
+    state.minimapDragging = true;
+    const p = getPointerXY(evt);
+    navigateMinimapTo(p.x, p.y);
+  }
+  function mmPointerMove(evt) {
+    if (!state.minimapDragging) return;
+    evt.preventDefault && evt.preventDefault();
+    const p = getPointerXY(evt);
+    navigateMinimapTo(p.x, p.y);
+  }
+  function mmPointerUp() { state.minimapDragging = false; }
+
+  elMinimapCanvas.addEventListener('mousedown', mmPointerDown);
+  elMinimapCanvas.addEventListener('touchstart', mmPointerDown, { passive: true });
+  document.addEventListener('mousemove', mmPointerMove);
+  document.addEventListener('touchmove', mmPointerMove, { passive: false });
+  document.addEventListener('mouseup', mmPointerUp);
+  document.addEventListener('touchend', mmPointerUp);
+
+  elBtnMinimap.classList.toggle('active', state.minimapVisible);
+  elBtnMinimap.addEventListener('click', function () {
+    state.minimapVisible = !state.minimapVisible;
+    localStorage.setItem('dbmlstudio.minimap', state.minimapVisible ? '1' : '0');
+    elBtnMinimap.classList.toggle('active', state.minimapVisible);
+    if (state.minimapVisible) updateMinimap();
+    else elMinimapPanel.classList.add('hidden');
+  });
+
+  /* =========================================================================
+     9. BUSCADOR Y FILTRO
+     ========================================================================= */
+  elSearchInput.addEventListener('input', _.debounce(function () {
+    const q = elSearchInput.value.trim().toLowerCase();
+    if (!q) return;
+    const match = getElements().find(el => (el.get('tableName') || '').toLowerCase().includes(q));
+    if (!match) return;
+
+    const view = paper.findViewByModel(match);
+    if (view) {
+      view.el.classList.remove('cell-highlight');
+      void view.el.offsetWidth; // reflow para reiniciar animación
+      view.el.classList.add('cell-highlight');
+    }
+
+    // centrar la vista en el elemento
+    const bbox = match.getBBox();
+    const containerRect = elPaperContainer.getBoundingClientRect();
+    const z = state.zoom;
+    const tx = containerRect.width / 2 - (bbox.x + bbox.width / 2) * z;
+    const ty = containerRect.height / 2 - (bbox.y + bbox.height / 2) * z;
+    paper.translate(tx, ty);
+    updateMinimap();
+  }, 300));
+
+  /* =========================================================================
+     10. TEMA VISUAL
+     ========================================================================= */
+  elThemeSelect.value = state.theme;
+  elThemeSelect.addEventListener('change', function () {
+    state.theme = elThemeSelect.value;
+    localStorage.setItem(LS_KEYS.theme, state.theme);
+    renderGraph(getDbml(), { keepPositions: true });
+  });
+
+  /* =========================================================================
+     11. RENDER EN TIEMPO REAL (DEBOUNCE 500ms) + PERSISTENCIA + HISTORIAL
+     ========================================================================= */
+  function setStatus(mode) {
+    elStatusDot.className = 'status-dot ' + mode;
+    elStatusText.textContent = mode === 'saving' ? 'Guardando…' : (mode === 'error' ? 'Error al analizar' : 'Guardado');
+  }
+
+  const MAX_HISTORY = 100;
+
+  function pushHistory(text) {
+    if (state.suppressHistoryPush) return;
+    // evita duplicados consecutivos
+    if (state.history[state.historyIndex] === text) return;
+    state.history = state.history.slice(0, state.historyIndex + 1);
+    state.history.push(text);
+    if (state.history.length > MAX_HISTORY) state.history.shift();
+    state.historyIndex = state.history.length - 1;
+    updateUndoRedoButtons();
+  }
+
+  function updateUndoRedoButtons() {
+    elBtnUndo.disabled = state.historyIndex <= 0;
+    elBtnRedo.disabled = state.historyIndex >= state.history.length - 1;
+  }
+
+  cm.on('change', function () {
+    if (state.suppressHistoryPush) return; // evita re-disparar mientras deshacemos/rehacemos/cargamos
+    setStatus('saving');
+    clearTimeout(state.renderTimer);
+    clearTimeout(state.saveTimer);
+
+    state.renderTimer = setTimeout(function () {
+      try {
+        renderGraph(getDbml());
+        setStatus('saved');
+      } catch (e) {
+        console.error(e);
+        setStatus('error');
+      }
+    }, 500);
+
+    state.saveTimer = setTimeout(function () {
+      localStorage.setItem(LS_KEYS.dbml, getDbml());
+      pushHistory(getDbml());
+    }, 500);
+  });
+
+  elBtnUndo.addEventListener('click', function () {
+    if (state.historyIndex <= 0) return;
+    state.historyIndex -= 1;
+    state.suppressHistoryPush = true;
+    setDbml(state.history[state.historyIndex]);
+    localStorage.setItem(LS_KEYS.dbml, getDbml());
+    renderGraph(getDbml());
+    state.suppressHistoryPush = false;
+    updateUndoRedoButtons();
+  });
+
+  elBtnRedo.addEventListener('click', function () {
+    if (state.historyIndex >= state.history.length - 1) return;
+    state.historyIndex += 1;
+    state.suppressHistoryPush = true;
+    setDbml(state.history[state.historyIndex]);
+    localStorage.setItem(LS_KEYS.dbml, getDbml());
+    renderGraph(getDbml());
+    state.suppressHistoryPush = false;
+    updateUndoRedoButtons();
+  });
+
+  /* =========================================================================
+     12. EXPORTACIÓN
+     ========================================================================= */
+  function download(filename, content, mime) {
+    const blob = content instanceof Blob ? content : new Blob([content], { type: mime });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+  }
+
+  function getSerializedSvg() {
+    const bbox = graph.getBBox() || { x: 0, y: 0, width: 800, height: 600 };
+    const pad = 30;
+    const clone = paper.svg.cloneNode(true);
+    clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+    clone.setAttribute('width', bbox.width + pad * 2);
+    clone.setAttribute('height', bbox.height + pad * 2);
+    clone.setAttribute('viewBox', (bbox.x - pad) + ' ' + (bbox.y - pad) + ' ' + (bbox.width + pad * 2) + ' ' + (bbox.height + pad * 2));
+    // fondo
+    const bg = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+    bg.setAttribute('x', bbox.x - pad); bg.setAttribute('y', bbox.y - pad);
+    bg.setAttribute('width', bbox.width + pad * 2); bg.setAttribute('height', bbox.height + pad * 2);
+    bg.setAttribute('fill', THEMES[state.theme].bodyFill === '#ffffff' ? '#ffffff' : '#0f172a');
+    clone.insertBefore(bg, clone.firstChild);
+    return { svgString: new XMLSerializer().serializeToString(clone), bbox, pad };
+  }
+
+  elBtnExportSvg.addEventListener('click', function () {
+    if (!graph.getElements().length) return;
+    const { svgString } = getSerializedSvg();
+    download('diagrama-er.svg', svgString, 'image/svg+xml');
+  });
+
+  elBtnExportPng.addEventListener('click', function () {
+    if (!graph.getElements().length) return;
+    const { svgString, bbox, pad } = getSerializedSvg();
+    const scaleFactor = 2; // export nítido
+    const img = new Image();
+    const svg64 = btoa(unescape(encodeURIComponent(svgString)));
+    img.onload = function () {
+      const canvas = document.createElement('canvas');
+      canvas.width = (bbox.width + pad * 2) * scaleFactor;
+      canvas.height = (bbox.height + pad * 2) * scaleFactor;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      canvas.toBlob(function (blob) { download('diagrama-er.png', blob); });
+    };
+    img.onerror = function () { showAlert('Error al exportar', 'No se pudo generar el PNG. Intenta exportar como SVG.'); };
+    img.src = 'data:image/svg+xml;base64,' + svg64;
+  });
+
+  elBtnDownloadDbml.addEventListener('click', function () {
+    download('esquema.dbml', getDbml(), 'text/plain');
+  });
+
+  /* =========================================================================
+     12b. MODELOS GUARDADOS (multi-proyecto)
+     Cada modelo guarda: el texto DBML, las posiciones de las tablas, el tema
+     y el modo de layout. El select permite ir cargando distintos modelos;
+     el borrador actual (autosave normal) sigue funcionando independiente
+     de si hay o no un modelo "abierto".
+     ========================================================================= */
+  function getProjectsIndex() {
+    try { return JSON.parse(localStorage.getItem(LS_KEYS.projectsIndex) || '[]'); }
+    catch (e) { return []; }
+  }
+
+  function setProjectsIndex(list) {
+    localStorage.setItem(LS_KEYS.projectsIndex, JSON.stringify(list));
+  }
+
+  function refreshProjectSelect() {
+    const list = getProjectsIndex().slice().sort((a, b) => a.name.localeCompare(b.name, 'es'));
+    elProjectSelect.innerHTML = '';
+    const placeholder = document.createElement('option');
+    placeholder.value = '';
+    placeholder.textContent = '— Sin guardar —';
+    elProjectSelect.appendChild(placeholder);
+    list.forEach(p => {
+      const opt = document.createElement('option');
+      opt.value = p.id;
+      opt.textContent = p.name;
+      if (p.id === state.currentProjectId) opt.selected = true;
+      elProjectSelect.appendChild(opt);
+    });
+    if (!state.currentProjectId) placeholder.selected = true;
+    elBtnProjectSave.disabled = !state.currentProjectId;
+    elBtnProjectDel.disabled = !state.currentProjectId;
+  }
+
+  function buildProjectSnapshot(name, id) {
+    return {
+      id, name,
+      dbml: getDbml(),
+      positions: state.positions,
+      theme: state.theme,
+      layoutMode: state.layoutMode,
+      updatedAt: Date.now()
+    };
+  }
+
+  function flashProjectButton(btn, text) {
+    const original = btn.textContent;
+    btn.textContent = text;
+    btn.disabled = true;
+    setTimeout(function () {
+      btn.textContent = original;
+      btn.disabled = !state.currentProjectId;
+    }, 900);
+  }
+
+  function saveCurrentProject() {
+    if (!state.currentProjectId) return;
+    const list = getProjectsIndex();
+    const entry = list.find(p => p.id === state.currentProjectId);
+    const name = entry ? entry.name : 'Modelo';
+    const snap = buildProjectSnapshot(name, state.currentProjectId);
+    localStorage.setItem(LS_KEYS.projectPrefix + state.currentProjectId, JSON.stringify(snap));
+    if (entry) entry.updatedAt = snap.updatedAt;
+    setProjectsIndex(list);
+    flashProjectButton(elBtnProjectSave, '✔');
+  }
+
+  async function createNewProject() {
+    const name = await showModal({
+      title: 'Nuevo modelo',
+      message: 'Elige un nombre para guardar el estado actual del diagrama (texto DBML, posiciones, tema y layout).',
+      withInput: true,
+      defaultValue: 'Modelo sin título',
+      confirmText: 'Guardar'
+    });
+    if (!name || !name.trim()) return;
+    const id = 'p_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+    const snap = buildProjectSnapshot(name.trim(), id);
+    localStorage.setItem(LS_KEYS.projectPrefix + id, JSON.stringify(snap));
+    const list = getProjectsIndex();
+    list.push({ id, name: name.trim(), updatedAt: snap.updatedAt });
+    setProjectsIndex(list);
+    state.currentProjectId = id;
+    refreshProjectSelect();
+  }
+
+  async function deleteCurrentProject() {
+    if (!state.currentProjectId) return;
+    const list = getProjectsIndex();
+    const entry = list.find(p => p.id === state.currentProjectId);
+    const ok = await showModal({
+      title: 'Eliminar modelo',
+      message: '¿Eliminar el modelo "' + (entry ? entry.name : '') + '"? Esta acción no se puede deshacer.',
+      confirmText: 'Eliminar'
+    });
+    if (!ok) return;
+    localStorage.removeItem(LS_KEYS.projectPrefix + state.currentProjectId);
+    setProjectsIndex(list.filter(p => p.id !== state.currentProjectId));
+    state.currentProjectId = null;
+    refreshProjectSelect();
+  }
+
+  function loadProject(id) {
+    if (!id) {
+      state.currentProjectId = null;
+      refreshProjectSelect();
+      return;
+    }
+    const raw = localStorage.getItem(LS_KEYS.projectPrefix + id);
+    if (!raw) { refreshProjectSelect(); return; }
+    try {
+      const snap = JSON.parse(raw);
+      state.currentProjectId = id;
+      state.suppressHistoryPush = true;
+
+      setDbml(snap.dbml || '');
+      state.positions = snap.positions || {};
+      localStorage.setItem(LS_KEYS.positions, JSON.stringify(state.positions));
+
+      state.theme = snap.theme || state.theme;
+      elThemeSelect.value = state.theme;
+      localStorage.setItem(LS_KEYS.theme, state.theme);
+
+      state.layoutMode = snap.layoutMode || state.layoutMode;
+      layoutButtons.forEach(b => b.classList.toggle('active', b.dataset.layout === state.layoutMode));
+      localStorage.setItem(LS_KEYS.layout, state.layoutMode);
+
+      localStorage.setItem(LS_KEYS.dbml, getDbml());
+      renderGraph(getDbml(), { keepPositions: true });
+
+      state.history = [getDbml()];
+      state.historyIndex = 0;
+      updateUndoRedoButtons();
+      state.suppressHistoryPush = false;
+
+      refreshProjectSelect();
+      setStatus('saved');
+    } catch (e) {
+      console.error('[DBML Studio] No se pudo cargar el modelo', id, e);
+    }
+  }
+
+  elProjectSelect.addEventListener('change', function () { loadProject(elProjectSelect.value); });
+  elBtnProjectSave.addEventListener('click', saveCurrentProject);
+  elBtnProjectNew.addEventListener('click', createNewProject);
+  elBtnProjectDel.addEventListener('click', deleteCurrentProject);
+
+  /* =========================================================================
+     13. RESIZER (PANEL ARRASTRABLE)
+     ========================================================================= */
+  (function initResizer() {
+    let dragging = false;
+    elResizer.addEventListener('mousedown', function () {
+      dragging = true;
+      elResizer.classList.add('dragging');
+      document.body.classList.add('resizing');
+    });
+    document.addEventListener('mousemove', function (evt) {
+      if (!dragging) return;
+      const appRect = elApp.getBoundingClientRect();
+      let pct = ((evt.clientX - appRect.left) / appRect.width) * 100;
+      pct = Math.max(20, Math.min(70, pct));
+      elEditorPanel.style.width = pct + '%';
+      localStorage.setItem(LS_KEYS.splitWidth, pct);
+      cm.refresh();
+    });
+    document.addEventListener('mouseup', function () {
+      if (dragging) {
+        dragging = false;
+        elResizer.classList.remove('dragging');
+        document.body.classList.remove('resizing');
+        cm.refresh();
+      }
+    });
+    const savedPct = localStorage.getItem(LS_KEYS.splitWidth);
+    if (savedPct) elEditorPanel.style.width = savedPct + '%';
+  })();
+
+  /* =========================================================================
+     13b. PESTAÑAS MÓVILES — en pantallas <768px solo se muestra un panel a
+     la vez (Editor o Diagrama); en escritorio esto no tiene efecto visual
+     porque #mobile-tabbar permanece oculto vía CSS.
+     ========================================================================= */
+  function setMobileView(view) {
+    state.mobileView = view;
+    const isEditor = view === 'editor';
+    elEditorPanel.classList.toggle('mobile-hide', !isEditor);
+    elCanvasPanel.classList.toggle('mobile-hide', isEditor);
+    elMtabEditor.classList.toggle('active', isEditor);
+    elMtabDiagram.classList.toggle('active', !isEditor);
+    if (isEditor) {
+      setTimeout(function () { cm.refresh(); }, 60);
+    } else {
+      setTimeout(function () {
+        paper.setDimensions(elPaperContainer.clientWidth, elPaperContainer.clientHeight);
+        updateMinimap();
+      }, 60);
+    }
+  }
+  elMtabEditor.addEventListener('click', function () { setMobileView('editor'); });
+  elMtabDiagram.addEventListener('click', function () { setMobileView('diagram'); });
+
+  /* =========================================================================
+     14. INICIALIZACIÓN
+     ========================================================================= */
+  (function init() {
+    try {
+      const savedDbml = localStorage.getItem(LS_KEYS.dbml);
+      const initialText = savedDbml !== null ? savedDbml : DEFAULT_DBML;
+      setDbml(initialText);
+
+      layoutButtons.forEach(b => b.classList.toggle('active', b.dataset.layout === state.layoutMode));
+
+      renderGraph(initialText, { keepPositions: Object.keys(state.positions).length > 0 });
+
+      state.history = [initialText];
+      state.historyIndex = 0;
+      updateUndoRedoButtons();
+
+      setStatus('saved');
+      setZoom(1);
+      updateViewSlotsUI();
+      refreshProjectSelect();
+      setMobileView(state.mobileView);
+      cm.refresh();
+
+      window.addEventListener('resize', function () {
+        cm.refresh();
+        paper.setDimensions(elPaperContainer.clientWidth, elPaperContainer.clientHeight);
+        updateMinimap();
+      });
+    } catch (e) {
+      console.error('[DBML Studio] Fallo al inicializar:', e);
+      setStatus('error');
+    }
+  })();
+
+})();
+</script>
+
+</body>
+</html>
