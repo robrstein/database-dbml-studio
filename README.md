@@ -1,4 +1,4 @@
-# DBML Studio
+# DATABASE DBML Studio
 
 <pre style="white-space: nowrap;">
 
