@@ -166,7 +166,10 @@
   }
   #paper-host { position:absolute; inset:0; }
   #paper-container.panning { cursor: grabbing; }
-  #paper-container { cursor: default; background-image: radial-gradient(#1e293b 1px, transparent 1px); background-size: 22px 22px; }
+  #paper-container { cursor: default; background-size: 22px 22px; transition: background-color .15s ease; }
+  #paper-container.theme-bg-slate { background-color: #0f172a; background-image: radial-gradient(#1e293b 1px, transparent 1px); }
+  #paper-container.theme-bg-cyberpunk { background-color: #05050a; background-image: radial-gradient(#1a0a24 1px, transparent 1px); }
+  #paper-container.theme-bg-minimal { background-color: #f1f5f9; background-image: radial-gradient(#dbe1e8 1px, transparent 1px); }
 
   /* Select styling */
   select.tsel {
@@ -213,6 +216,16 @@
       <button id="btn-project-save" class="tbtn" title="Guardar cambios en el modelo actual" disabled>💾</button>
       <button id="btn-project-new" class="tbtn" title="Guardar el estado actual como un nuevo modelo">＋ Nuevo</button>
       <button id="btn-project-delete" class="tbtn" title="Eliminar el modelo actual" disabled>🗑</button>
+    </div>
+
+    <div class="flex items-center gap-1.5 px-2 py-2 bg-slate-800/70 border-b border-slate-700 flex-wrap">
+      <button id="mt-dbml" class="tbtn model-type-btn active" data-model="dbml" title="Modelo relacional / Entidad-Relación (DBML)">📐 DBML</button>
+      <button id="mt-uml" class="tbtn model-type-btn" data-model="uml" title="Diagrama de clases UML">🧩 UML</button>
+      <button id="mt-dfd" class="tbtn model-type-btn" data-model="dfd" title="Diagrama de Flujo de Datos">🔀 DFD</button>
+      <div class="flex-1"></div>
+      <select id="generate-from-select" class="tsel" title="Genera el texto de este modelo a partir de otro ya existente (lo que no se pueda traducir queda pendiente de completar a mano)">
+        <option value="">⚡ Generar desde…</option>
+      </select>
     </div>
 
     <textarea id="dbml-input" spellcheck="false"
@@ -384,6 +397,8 @@
   const elBtnProjectSave = document.getElementById('btn-project-save');
   const elBtnProjectNew  = document.getElementById('btn-project-new');
   const elBtnProjectDel  = document.getElementById('btn-project-delete');
+  const modelTypeButtons = Array.from(document.querySelectorAll('.model-type-btn'));
+  const elGenerateFrom   = document.getElementById('generate-from-select');
   const elModalOverlay   = document.getElementById('modal-overlay');
   const elModalTitle     = document.getElementById('modal-title');
   const elModalMessage   = document.getElementById('modal-message');
@@ -538,6 +553,37 @@
     meta: { lineComment: '//' }
   });
 
+  CodeMirror.defineSimpleMode('uml', {
+    start: [
+      { regex: /\/\/.*/, token: 'comment' },
+      { regex: /"(?:[^\\"]|\\.)*"/, token: 'string' },
+      { regex: /\b(class)\b/, token: 'keyword' },
+      { regex: /\[/, token: 'bracket', next: 'settings' },
+      { regex: /[{}]/, token: 'bracket' },
+      { regex: /(<\|--|-->|:)/, token: 'operator' },
+      { regex: /[+\-#~]/, token: 'atom' },
+      { regex: /#[0-9a-fA-F]{3,8}\b/, token: 'atom' },
+      { regex: /[a-zA-Z_][a-zA-Z0-9_]*/, token: 'variable' }
+    ],
+    settings: [
+      { regex: /\]/, token: 'bracket', next: 'start' },
+      { regex: /[a-zA-Z_][a-zA-Z0-9_]*/, token: 'attribute' },
+      { regex: /./, token: 'attribute' }
+    ],
+    meta: { lineComment: '//' }
+  });
+
+  CodeMirror.defineSimpleMode('dfd', {
+    start: [
+      { regex: /\/\/.*/, token: 'comment' },
+      { regex: /"(?:[^\\"]|\\.)*"/, token: 'string' },
+      { regex: /\b(Process|Entity|Store)\b/, token: 'keyword' },
+      { regex: /(->|:)/, token: 'operator' },
+      { regex: /[a-zA-Z_][a-zA-Z0-9_]*/, token: 'variable' }
+    ],
+    meta: { lineComment: '//' }
+  });
+
   const cm = CodeMirror.fromTextArea(elDbmlInput, {
     mode: 'dbml',
     theme: 'dbml-dark',
@@ -596,7 +642,9 @@
     viewPrefix: 'dbmlstudio.view.',
     projectsIndex: 'dbmlstudio.projects.index',
     projectPrefix: 'dbmlstudio.project.',
-    snap: 'dbmlstudio.snap'
+    snap: 'dbmlstudio.snap',
+    models: 'dbmlstudio.models',
+    activeModelType: 'dbmlstudio.activeModelType'
   };
 
   const DEFAULT_DBML =
@@ -643,6 +691,48 @@ Ref: post_tags.post_id > posts.id
 Ref: post_tags.tag_id > tags.id
 `;
 
+  const DEFAULT_UML =
+`// Diagrama de clases UML
+// Sintaxis: atributos "visibilidad nombre: tipo" (+ público, - privado, # protegido)
+// Métodos: "visibilidad nombre(params)". Relaciones abajo de las clases.
+
+class Usuario [headercolor: #6366f1] {
+  +id: int
+  +nombre: string
+  -password: string
+  +iniciarSesion()
+}
+
+class Pedido [headercolor: #f59e0b] {
+  +id: int
+  +total: decimal
+}
+
+// Asociación con multiplicidad y etiqueta opcional
+Usuario "1" --> "N" Pedido : realiza
+
+// Herencia (el hijo va después de <|--)
+class Admin [headercolor: #ec4899] {
+  +permisos: string
+}
+Usuario <|-- Admin
+`;
+
+  const DEFAULT_DFD =
+`// Diagrama de Flujo de Datos (DFD)
+// Nodos: Process | Entity | Store <id> "Etiqueta visible"
+// Flujos: <id origen> -> <id destino> : "descripción"
+
+Entity E1 "Cliente"
+Process P1 "Procesar Pedido"
+Store D1 "Base de Pedidos"
+
+E1 -> P1 : "Datos del pedido"
+P1 -> D1 : "Guardar pedido"
+D1 -> P1 : "Consultar pedido"
+P1 -> E1 : "Confirmación"
+`;
+
   /* =========================================================================
      2. ESTADO GLOBAL
      ========================================================================= */
@@ -665,18 +755,17 @@ Ref: post_tags.tag_id > tags.id
     activeColorFilter: null,    // color activo seleccionado vía swatch
     rubberBand: null,           // datos del recuadro de selección en curso
     dragGroup: null,            // datos del arrastre múltiple en curso
+    groupFrameDrag: null,       // datos del arrastre de un TableGroup completo (vía su marco)
     currentProjectId: null,     // id del modelo guardado actualmente cargado (o null si es el borrador sin guardar)
     snapEnabled: localStorage.getItem('dbmlstudio.snap') === '1',
     collapsedGroups: new Set(),  // nombres de TableGroup actualmente colapsados (solo de sesión)
     minimapVisible: localStorage.getItem('dbmlstudio.minimap') !== '0',
     minimapDragging: false,
     mobileView: 'diagram',   // 'editor' | 'diagram' — solo aplica visualmente en pantallas <768px
-    multiSelectMode: false   // toque = alternar selección, y arrastrar el fondo = recuadro (útil en touch)
+    multiSelectMode: false,  // toque = alternar selección, y arrastrar el fondo = recuadro (útil en touch)
+    models: { dbml: '', uml: '', dfd: '' }, // texto fuente de cada tipo de modelo
+    activeModelType: 'dbml'  // 'dbml' | 'uml' | 'dfd' — cuál se muestra ahora en el editor/lienzo
   };
-
-  try {
-    state.positions = JSON.parse(localStorage.getItem(LS_KEYS.positions) || '{}');
-  } catch (e) { state.positions = {}; }
 
   /* =========================================================================
      3. TEMAS VISUALES
@@ -688,7 +777,9 @@ Ref: post_tags.tag_id > tags.id
       rowFillA: '#1e293b', rowFillB: '#243244',
       sepColor: '#334155', fontFamily: 'Consolas, Menlo, monospace',
       defaultPalette: ['#6366f1', '#06b6d4', '#f59e0b', '#10b981', '#ec4899', '#8b5cf6', '#ef4444', '#0ea5e9'],
-      linkColor: '#64748b', filter: null, rx: 10
+      linkColor: '#fbbf24',
+      linkGlow: { name: 'dropShadow', args: { dx: 0, dy: 0, blur: 3, color: '#fbbf24', opacity: 0.6 } },
+      filter: null, rx: 10
     },
     cyberpunk: {
       bodyFill: '#0a0a12', stroke: '#ff2bd6', strokeWidth: 1.5,
@@ -697,6 +788,7 @@ Ref: post_tags.tag_id > tags.id
       sepColor: '#33143f', fontFamily: 'Consolas, Menlo, monospace',
       defaultPalette: ['#00f6ff', '#ff2bd6', '#faff00', '#39ff14', '#ff6a00', '#c400ff'],
       linkColor: '#00f6ff',
+      linkGlow: { name: 'dropShadow', args: { dx: 0, dy: 0, blur: 4, color: '#00f6ff', opacity: 0.75 } },
       filter: { name: 'dropShadow', args: { dx: 0, dy: 0, blur: 4, color: '#ff2bd6', opacity: 0.9 } },
       rx: 4
     },
@@ -706,7 +798,9 @@ Ref: post_tags.tag_id > tags.id
       rowFillA: '#ffffff', rowFillB: '#f8fafc',
       sepColor: '#e4e4e7', fontFamily: 'Menlo, Consolas, monospace',
       defaultPalette: ['#a5b4fc', '#7dd3fc', '#fcd34d', '#86efac', '#f9a8d4', '#c4b5fd'],
-      linkColor: '#a1a1aa', filter: null, rx: 6
+      linkColor: '#334155',
+      linkGlow: { name: 'dropShadow', args: { dx: 0, dy: 0, blur: 2, color: '#ffffff', opacity: 0.9 } },
+      filter: null, rx: 6
     }
   };
 
@@ -841,6 +935,122 @@ Ref: post_tags.tag_id > tags.id
   }
 
   /* =========================================================================
+     4b. PARSER UML (diagrama de clases)
+     Sintaxis: class Nombre [headercolor: #hex] { +attr: tipo  +metodo() }
+     Relaciones: A "1" --> "N" B : etiqueta   |   A <|-- B (herencia, B hereda de A)
+     ========================================================================= */
+  function parseUML(text) {
+    const tables = [];
+    const refs = [];
+    const groups = [];
+    if (!text || !text.trim()) return { tables, refs, groups };
+
+    const classRe = /class\s+([a-zA-Z0-9_."]+)\s*(?:\[([^\]]*)\])?\s*\{([\s\S]*?)\}/gi;
+    let m;
+    while ((m = classRe.exec(text)) !== null) {
+      const rawName = m[1].replace(/"/g, '');
+      const settings = m[2] || '';
+      const body = m[3] || '';
+
+      let color = null;
+      const colorMatch = settings.match(/headercolor:\s*["']?(#[0-9a-fA-F]{3,8}|[a-zA-Z]+)["']?/i);
+      if (colorMatch) color = colorMatch[1];
+
+      const fields = [];
+      body.split('\n').forEach(line => {
+        const trimmed = line.trim();
+        if (!trimmed || /^\/\//.test(trimmed)) return;
+
+        const methodMatch = trimmed.match(/^([+\-#~]?)\s*([a-zA-Z0-9_]+)\s*\(([^)]*)\)\s*(?::\s*([a-zA-Z0-9_<>]+))?$/);
+        if (methodMatch) {
+          fields.push({ name: methodMatch[2] + '()', type: methodMatch[4] || '', pk: false, visibility: methodMatch[1] || '+' });
+          return;
+        }
+        const attrMatch = trimmed.match(/^([+\-#~]?)\s*([a-zA-Z0-9_]+)\s*:\s*([a-zA-Z0-9_<>,.\[\] ]+)$/);
+        if (attrMatch) {
+          fields.push({ name: attrMatch[2], type: attrMatch[3].trim(), pk: false, visibility: attrMatch[1] || '+' });
+        }
+      });
+
+      tables.push({ name: rawName, color, fields, isEnum: false, kind: 'class' });
+    }
+
+    text.split('\n').forEach((lineText, idx) => {
+      const trimmed = lineText.trim();
+      if (!trimmed || /^\/\//.test(trimmed) || /^class\b/i.test(trimmed)) return;
+
+      // herencia: Padre <|-- Hijo  (el hijo hereda del padre)
+      const inheritMatch = trimmed.match(/^([a-zA-Z0-9_]+)\s*<\|--\s*([a-zA-Z0-9_]+)/);
+      if (inheritMatch) {
+        refs.push({
+          from: { table: inheritMatch[2], field: '' }, to: { table: inheritMatch[1], field: '' },
+          cardinality: { source: '', target: '' }, line: idx, kind: 'inherit', label: ''
+        });
+        return;
+      }
+
+      // asociación: A "1" --> "N" B : etiqueta  (multiplicidades y etiqueta opcionales)
+      const assocMatch = trimmed.match(/^([a-zA-Z0-9_]+)\s*(?:"([^"]*)")?\s*-->\s*(?:"([^"]*)")?\s*([a-zA-Z0-9_]+)\s*(?::\s*(.+))?$/);
+      if (assocMatch) {
+        refs.push({
+          from: { table: assocMatch[1], field: '' }, to: { table: assocMatch[4], field: '' },
+          cardinality: { source: assocMatch[2] || '', target: assocMatch[3] || '' },
+          line: idx, kind: 'assoc', label: (assocMatch[5] || '').trim()
+        });
+      }
+    });
+
+    return { tables, refs, groups };
+  }
+
+  /* =========================================================================
+     4c. PARSER DFD (Diagrama de Flujo de Datos)
+     Nodos: Process|Entity|Store <id> "Etiqueta"
+     Flujos: <id> -> <id> : "descripción"
+     ========================================================================= */
+  function parseDFD(text) {
+    const tables = [];
+    const refs = [];
+    const groups = [];
+    if (!text || !text.trim()) return { tables, refs, groups };
+
+    const nodeRe = /^(Process|Entity|Store)\s+([a-zA-Z0-9_]+)\s+"([^"]*)"/i;
+    const flowRe = /^([a-zA-Z0-9_]+)\s*->\s*([a-zA-Z0-9_]+)\s*(?::\s*"([^"]*)")?/;
+    const idToName = {};
+
+    const lines = text.split('\n');
+    lines.forEach(lineText => {
+      const trimmed = lineText.trim();
+      const m = trimmed.match(nodeRe);
+      if (!m) return;
+      const kind = m[1].toLowerCase(); // process | entity | store
+      const id = m[2], label = m[3];
+      idToName[id] = label;
+      tables.push({ name: label, color: null, fields: [], isEnum: false, kind: kind });
+    });
+
+    lines.forEach((lineText, idx) => {
+      const trimmed = lineText.trim();
+      const m = trimmed.match(flowRe);
+      if (!m) return;
+      const fromName = idToName[m[1]], toName = idToName[m[2]];
+      if (!fromName || !toName) return; // referencia a un id de nodo inexistente
+      refs.push({
+        from: { table: fromName, field: '' }, to: { table: toName, field: '' },
+        cardinality: { source: '', target: '' }, line: idx, kind: 'flow', label: m[3] || ''
+      });
+    });
+
+    return { tables, refs, groups };
+  }
+
+  function getActiveParser() {
+    if (state.activeModelType === 'uml') return parseUML;
+    if (state.activeModelType === 'dfd') return parseDFD;
+    return parseDBML;
+  }
+
+  /* =========================================================================
      5. JOINTJS: INICIALIZACIÓN
      ========================================================================= */
   const graph = new joint.dia.Graph({}, { cellNamespace: joint.shapes });
@@ -876,6 +1086,9 @@ Ref: post_tags.tag_id > tags.id
   function colorFor(table, index, theme) {
     if (table.color) return normalizeColor(table.color);
     if (table.isEnum) return '#a855f7';
+    if (table.kind === 'entity') return '#f59e0b';
+    if (table.kind === 'process') return '#22c55e';
+    if (table.kind === 'store') return '#6366f1';
     const pal = THEMES[theme].defaultPalette;
     return pal[index % pal.length];
   }
@@ -906,6 +1119,7 @@ Ref: post_tags.tag_id > tags.id
 
   function buildTableAttrs(table, width, height, headerColor, theme) {
     const th = THEMES[theme];
+    const headerIcon = table.isEnum ? '🔤 ' : (table.kind === 'class' ? '🧩 ' : '');
     const attrs = {
       body: {
         width, height, fill: th.bodyFill, stroke: th.stroke,
@@ -916,19 +1130,66 @@ Ref: post_tags.tag_id > tags.id
         rx: th.rx, ry: th.rx
       },
       headerText: {
-        text: (table.isEnum ? '🔤 ' : '') + table.name, x: 10, y: 21, fill: th.headerTextColor,
+        text: headerIcon + table.name, x: 10, y: 21, fill: th.headerTextColor,
         fontWeight: '700', fontSize: 13, fontFamily: th.fontFamily
       }
     };
     table.fields.forEach((f, i) => {
       const y = HEADER_H + i * ROW_H;
+      // en UML, el ícono de la fila es la visibilidad (+/-/#/~); en DBML es la llave primaria
+      const icon = f.visibility ? f.visibility : (f.pk ? '🔑' : '');
       attrs['row' + i] = { x: 0, y, width, height: ROW_H, fill: i % 2 === 0 ? th.rowFillA : th.rowFillB };
-      attrs['pk' + i] = { text: f.pk ? '🔑' : '', x: 8, y: y + 16, fontSize: 10 };
+      attrs['pk' + i] = { text: icon, x: 8, y: y + 16, fontSize: f.visibility ? 12 : 10, fill: th.typeColor, fontWeight: '700' };
       attrs['fname' + i] = { text: f.name, x: 26, y: y + 16, fill: th.textColor, fontSize: 12, fontFamily: th.fontFamily, fontWeight: f.pk ? '700' : '400' };
       attrs['ftype' + i] = { text: f.type, x: width - 10, y: y + 16, fill: th.typeColor, fontSize: 10.5, fontFamily: th.fontFamily, textAnchor: 'end' };
       attrs['sep' + i] = { x1: 0, y1: y + ROW_H, x2: width, y2: y + ROW_H, stroke: th.sepColor, strokeWidth: 0.75 };
     });
     return attrs;
+  }
+
+  /* --- Nodos DFD: cajas simples de una sola línea, sin filas --- */
+  const DFD_NODE_H = 56;
+
+  function measureDFDWidth(table) {
+    return Math.max(130, table.name.length * 9 + 44);
+  }
+
+  function buildDFDNodeMarkup(kind) {
+    if (kind === 'store') {
+      return [
+        { tagName: 'rect', selector: 'fillbg' },
+        { tagName: 'path', selector: 'storelines' },
+        { tagName: 'text', selector: 'label' }
+      ];
+    }
+    return [
+      { tagName: 'rect', selector: 'body' },
+      { tagName: 'text', selector: 'label' }
+    ];
+  }
+
+  function buildDFDNodeAttrs(table, width, height, color, theme) {
+    const th = THEMES[theme];
+    if (table.kind === 'store') {
+      return {
+        fillbg: { width, height, fill: th.bodyFill, stroke: 'none' },
+        storelines: { d: 'M 0 0 L ' + width + ' 0 M 0 ' + height + ' L ' + width + ' ' + height, stroke: color, 'stroke-width': 2, fill: 'none' },
+        label: { text: table.name, x: width / 2, y: height / 2 + 4, fill: th.textColor, fontSize: 12, fontFamily: th.fontFamily, textAnchor: 'middle', fontWeight: '600' }
+      };
+    }
+    const rx = table.kind === 'process' ? height / 2 : 4;
+    return {
+      body: { width, height, fill: th.bodyFill, stroke: color, strokeWidth: 2, rx, ry: rx },
+      label: { text: table.name, x: width / 2, y: height / 2 + 4, fill: th.textColor, fontSize: 12, fontFamily: th.fontFamily, textAnchor: 'middle', fontWeight: '600' }
+    };
+  }
+
+  /* --- Marcadores y estilos de línea por tipo de modelo --- */
+  function simpleArrowMarker(color) {
+    return { type: 'path', d: 'M 8 -4 0 0 8 4 Z', fill: color };
+  }
+  function hollowTriangleMarker(color) {
+    return { type: 'path', d: 'M 14 -6 0 0 14 6 Z', fill: '#ffffff', stroke: color, 'stroke-width': 1.5 };
   }
 
   function computeRefProblems(parsed) {
@@ -1008,9 +1269,15 @@ Ref: post_tags.tag_id > tags.id
 
   function renderGraph(dbmlText, opts) {
     opts = opts || {};
-    const parsed = parseDBML(dbmlText);
+    const modelType = state.activeModelType;
+    const parsed = getActiveParser()(dbmlText);
     state.parsed = parsed;
-    markDbmlErrors(computeRefProblems(parsed).concat(computeStructuralProblems(parsed, dbmlText)));
+
+    if (modelType === 'dbml') {
+      markDbmlErrors(computeRefProblems(parsed).concat(computeStructuralProblems(parsed, dbmlText)));
+    } else {
+      clearDbmlMarkers(); // las validaciones de Refs/duplicados solo aplican al modelo DBML por ahora
+    }
 
     elEmptyHint.style.display = parsed.tables.length ? 'none' : 'flex';
 
@@ -1032,36 +1299,48 @@ Ref: post_tags.tag_id > tags.id
     const newElements = [];
     const newLinks = [];
 
-    // Tablas ocultas por pertenecer a un TableGroup colapsado: no se crean sus
-    // elementos ni los enlaces que las tocan (estos se omiten solos, ya que
-    // el lookup por elementsByName fallará más abajo para esas refs).
+    // Tablas ocultas por pertenecer a un TableGroup colapsado (solo DBML por
+    // ahora): no se crean sus elementos ni los enlaces que las tocan.
     const hiddenByCollapse = new Set();
     (parsed.groups || []).forEach(g => {
       if (state.collapsedGroups.has(g.name)) g.tables.forEach(t => hiddenByCollapse.add(t));
     });
 
+    const isDFDNode = table => table.kind === 'process' || table.kind === 'entity' || table.kind === 'store';
+
     parsed.tables.forEach((table, idx) => {
       if (hiddenByCollapse.has(table.name)) return;
-      const width = measureWidth(table);
-      const height = HEADER_H + table.fields.length * ROW_H;
       const headerColor = colorFor(table, idx, theme);
       const saved = state.positions[table.name];
       const pos = saved || { x: 80 + (idx % 4) * 280, y: 80 + Math.floor(idx / 4) * 220 };
+
+      let width, height, markup, attrsObj;
+      if (isDFDNode(table)) {
+        width = measureDFDWidth(table);
+        height = DFD_NODE_H;
+        markup = buildDFDNodeMarkup(table.kind);
+        attrsObj = buildDFDNodeAttrs(table, width, height, headerColor, theme);
+      } else {
+        width = measureWidth(table);
+        height = HEADER_H + table.fields.length * ROW_H;
+        markup = buildTableMarkup(table.fields.length);
+        attrsObj = buildTableAttrs(table, width, height, headerColor, theme);
+      }
 
       const el = new joint.dia.Element({
         id: 'tbl_' + table.name,
         type: 'app.Table',
         position: pos,
         size: { width, height },
-        attrs: buildTableAttrs(table, width, height, headerColor, theme),
+        attrs: attrsObj,
         z: 2
       });
       // IMPORTANTE: el markup con número variable de filas debe asignarse
       // como propiedad directa de la instancia (no vía atributos de Backbone
       // en el constructor), porque CellView lee `model.markup` directamente.
-      el.markup = buildTableMarkup(table.fields.length);
+      el.markup = markup;
       if (THEMES[theme].filter) {
-        el.attr('body/filter', THEMES[theme].filter);
+        el.attr(isDFDNode(table) ? 'body/filter' : 'body/filter', THEMES[theme].filter);
       }
       el.set('tableName', table.name, { silent: true });
       elementsByName[table.name] = el;
@@ -1072,7 +1351,6 @@ Ref: post_tags.tag_id > tags.id
       const src = elementsByName[ref.from.table];
       const tgt = elementsByName[ref.to.table];
       if (!src || !tgt) return;
-      const card = ref.cardinality || { source: '1', target: '1' };
       const linkColor = THEMES[theme].linkColor;
       const link = new joint.dia.Link({
         id: 'ref_' + ref.from.table + '_' + ref.from.field + '_' + ref.to.table + '_' + ref.to.field + '_' + Math.random().toString(36).slice(2, 7),
@@ -1081,22 +1359,67 @@ Ref: post_tags.tag_id > tags.id
         target: { id: tgt.id },
         router: { name: 'manhattan', args: { padding: 12, step: 12 } },
         connector: { name: 'rounded', args: { radius: 8 } },
-        attrs: {
-          line: {
-            stroke: linkColor, strokeWidth: 1.6,
-            sourceMarker: crowsFootMarker(card.source, linkColor),
-            targetMarker: crowsFootMarker(card.target, linkColor)
-          }
-        },
+        attrs: { line: { stroke: linkColor, strokeWidth: 2.25, filter: THEMES[theme].linkGlow } },
         z: 1
       });
-      link.appendLabel({
-        attrs: {
-          text: { text: ref.from.field + ' → ' + ref.to.field, fill: THEMES[theme].linkColor, fontSize: 9, fontFamily: THEMES[theme].fontFamily },
-          rect: { fill: THEMES[theme].bodyFill, stroke: 'none' }
-        },
-        position: { distance: 0.5 }
-      });
+
+      if (modelType === 'dbml') {
+        const card = ref.cardinality || { source: '1', target: '1' };
+        link.attr('line/sourceMarker', crowsFootMarker(card.source, linkColor));
+        link.attr('line/targetMarker', crowsFootMarker(card.target, linkColor));
+        link.appendLabel({
+          attrs: {
+            text: { text: ref.from.field + ' → ' + ref.to.field, fill: linkColor, fontSize: 9, fontFamily: THEMES[theme].fontFamily },
+            rect: { fill: THEMES[theme].bodyFill, stroke: 'none' }
+          },
+          position: { distance: 0.5 }
+        });
+      } else if (modelType === 'uml') {
+        if (ref.kind === 'inherit') {
+          link.attr('line/targetMarker', hollowTriangleMarker(linkColor));
+        } else {
+          link.attr('line/targetMarker', simpleArrowMarker(linkColor));
+          const card = ref.cardinality || { source: '', target: '' };
+          if (card.source) {
+            link.appendLabel({
+              attrs: {
+                text: { text: card.source, fill: '#fff', fontSize: 9, fontWeight: '700', fontFamily: THEMES[theme].fontFamily },
+                rect: { fill: linkColor, stroke: 'none' }
+              },
+              position: { distance: 0.12 }
+            });
+          }
+          if (card.target) {
+            link.appendLabel({
+              attrs: {
+                text: { text: card.target, fill: '#fff', fontSize: 9, fontWeight: '700', fontFamily: THEMES[theme].fontFamily },
+                rect: { fill: linkColor, stroke: 'none' }
+              },
+              position: { distance: 0.88 }
+            });
+          }
+        }
+        if (ref.label) {
+          link.appendLabel({
+            attrs: {
+              text: { text: ref.label, fill: linkColor, fontSize: 9, fontFamily: THEMES[theme].fontFamily },
+              rect: { fill: THEMES[theme].bodyFill, stroke: 'none' }
+            },
+            position: { distance: 0.5 }
+          });
+        }
+      } else if (modelType === 'dfd') {
+        link.attr('line/targetMarker', simpleArrowMarker(linkColor));
+        if (ref.label) {
+          link.appendLabel({
+            attrs: {
+              text: { text: ref.label, fill: linkColor, fontSize: 9, fontFamily: THEMES[theme].fontFamily },
+              rect: { fill: THEMES[theme].bodyFill, stroke: 'none' }
+            },
+            position: { distance: 0.5 }
+          });
+        }
+      }
 
       newLinks.push(link);
     });
@@ -1136,7 +1459,7 @@ Ref: post_tags.tag_id > tags.id
       if (name) positions[name] = el.position();
     });
     state.positions = positions;
-    localStorage.setItem(LS_KEYS.positions, JSON.stringify(positions));
+    localStorage.setItem(LS_KEYS.positions + '.' + state.activeModelType, JSON.stringify(positions));
   }
 
   function animateTo(el, x, y) {
@@ -1175,11 +1498,15 @@ Ref: post_tags.tag_id > tags.id
         el = new joint.dia.Element({ id, type: 'app.Group', position: { x, y }, size: { width: w, height: h }, z: 0 });
         el.markup = [
           { tagName: 'rect', selector: 'frame' },
+          { tagName: 'rect', selector: 'headerStrip' },
           { tagName: 'text', selector: 'label' }
         ];
         el.attr('frame', {
           width: w, height: h, fill: 'rgba(99,102,241,0.05)',
-          stroke: '#6366f1', strokeWidth: 1.5, strokeDasharray: '6,4', rx: 12, ry: 12
+          stroke: '#6366f1', strokeWidth: 1.5, strokeDasharray: '6,4', rx: 12, ry: 12, cursor: 'move'
+        });
+        el.attr('headerStrip', {
+          width: w, height: labelSpace, x: 0, y: 0, fill: 'transparent', cursor: 'pointer'
         });
         el.attr('label', {
           text: '▾ ' + g.name, x: 12, y: 18, fill: '#a5b4fc', fontSize: 11,
@@ -1192,6 +1519,7 @@ Ref: post_tags.tag_id > tags.id
         el.set({ position: { x, y }, size: { width: w, height: h } });
         el.attr('frame/width', w);
         el.attr('frame/height', h);
+        el.attr('headerStrip/width', w);
       }
     });
   }
@@ -1241,6 +1569,18 @@ Ref: post_tags.tag_id > tags.id
     if (state.collapsedGroups.has(name)) state.collapsedGroups.delete(name);
     else state.collapsedGroups.add(name);
     renderGraph(getDbml(), { keepPositions: true });
+  }
+
+  // Selecciona todas las tablas miembro de un TableGroup (usado al hacer clic
+  // sobre el cuerpo del marco, y también reutilizable desde otros lugares).
+  function selectGroupMembers(groupName, additive) {
+    const g = (state.parsed.groups || []).find(x => x.name === groupName);
+    if (!g) return [];
+    const memberIds = g.tables.map(t => 'tbl_' + t).filter(id => graph.getCell(id));
+    if (!memberIds.length) return [];
+    if (!additive) clearSelection();
+    memberIds.forEach(id => selectElement(id));
+    return memberIds;
   }
 
   // Cualquier cambio de posición de una tabla recalcula los marcos de grupo
@@ -1640,8 +1980,38 @@ Ref: post_tags.tag_id > tags.id
 
   /* --- Selección y arrastre (individual o en grupo) de tablas --- */
   paper.on('element:pointerdown', function (elementView, evt) {
-    if (elementView.model.get('type') === 'app.Group') return; // los marcos de grupo no son seleccionables
-    const id = elementView.model.id;
+    const model = elementView.model;
+
+    if (model.get('type') === 'app.Group') {
+      // El título (headerStrip/label/hint) es exclusivo para colapsar/expandir
+      // (se maneja en element:pointerclick); acá solo interesa el cuerpo del marco.
+      const selector = evt.target && evt.target.getAttribute && evt.target.getAttribute('joint-selector');
+      if (selector === 'headerStrip' || selector === 'label' || selector === 'hint') return;
+      if (model.get('collapsed')) return; // el chip colapsado no tiene tablas que seleccionar/mover
+
+      const groupName = model.get('groupName');
+      if (!groupName) return;
+      const isModifier = evt.shiftKey || evt.ctrlKey || evt.metaKey || state.multiSelectMode;
+      const memberIds = selectGroupMembers(groupName, isModifier);
+      if (!memberIds.length) return;
+      if (isModifier) { state.groupFrameDrag = null; return; } // el modificador solo suma a la selección, no arrastra
+
+      // Arrastre de todo el grupo: como el marco no es "interactive", se
+      // registra la posición inicial de cada miembro y el punto de partida
+      // del puntero, y el movimiento se seguirá con listeners globales de
+      // documento (más robusto que depender de pointermove de JointJS sobre
+      // un elemento no-interactivo, y funciona igual con mouse o touch).
+      const startPositions = {};
+      memberIds.forEach(id => {
+        const el = graph.getCell(id);
+        if (el) startPositions[id] = el.position();
+      });
+      const p0 = getPointerXY(evt);
+      state.groupFrameDrag = { startX: p0.x, startY: p0.y, startPositions };
+      return;
+    }
+
+    const id = model.id;
     const isModifier = evt.shiftKey || evt.ctrlKey || evt.metaKey || state.multiSelectMode;
 
     if (isModifier) {
@@ -1666,6 +2036,29 @@ Ref: post_tags.tag_id > tags.id
       state.dragGroup = null;
     }
   });
+
+  function handleGroupFrameDragMove(evt) {
+    if (!state.groupFrameDrag) return;
+    const p = getPointerXY(evt);
+    const scale = paper.scale().sx || 1;
+    const dx = (p.x - state.groupFrameDrag.startX) / scale;
+    const dy = (p.y - state.groupFrameDrag.startY) / scale;
+    Object.keys(state.groupFrameDrag.startPositions).forEach(id => {
+      const el = graph.getCell(id);
+      if (!el) return;
+      const sp = state.groupFrameDrag.startPositions[id];
+      el.position(sp.x + dx, sp.y + dy);
+    });
+  }
+  function handleGroupFrameDragEnd() {
+    if (!state.groupFrameDrag) return;
+    state.groupFrameDrag = null;
+    saveAllPositions();
+  }
+  document.addEventListener('mousemove', handleGroupFrameDragMove);
+  document.addEventListener('touchmove', handleGroupFrameDragMove, { passive: false });
+  document.addEventListener('mouseup', handleGroupFrameDragEnd);
+  document.addEventListener('touchend', handleGroupFrameDragEnd);
 
   paper.on('element:pointermove', function (elementView) {
     const dg = state.dragGroup;
@@ -1811,7 +2204,7 @@ Ref: post_tags.tag_id > tags.id
   // corra en segundo plano — pushHistory ya evita duplicados.
   function applyDbmlEdit(newFullText) {
     setDbml(newFullText);
-    localStorage.setItem(LS_KEYS.dbml, newFullText);
+    persistModels();
     pushHistory(newFullText);
     renderGraph(newFullText);
     setStatus('saved');
@@ -2003,19 +2396,24 @@ Ref: post_tags.tag_id > tags.id
 
   paper.on('element:pointerdblclick', function (elementView) {
     if (elementView.model.get('type') === 'app.Group') return;
+    if (state.activeModelType !== 'dbml') return; // el editor visual de campos por ahora es específico de DBML
     openTableEditor(elementView.model);
   });
 
-  // Clic sobre el título de un marco/chip de TableGroup: colapsa o expande.
-  // Se restringe al texto del título (no a todo el recuadro) para no
-  // interferir con el paneo o la selección por recuadro dentro del grupo.
+  // Clic sobre el título de un marco de TableGroup expandido (headerStrip o
+  // label): colapsa. Un chip ya colapsado es clicable en cualquier parte
+  // (no tiene tablas debajo con las que se pueda interferir) para expandir.
   paper.on('element:pointerclick', function (elementView, evt) {
     const model = elementView.model;
     if (model.get('type') !== 'app.Group') return;
     const name = model.get('groupName');
     if (!name) return;
+    if (model.get('collapsed')) {
+      toggleGroupCollapse(name);
+      return;
+    }
     const selector = evt.target && evt.target.getAttribute && evt.target.getAttribute('joint-selector');
-    if (selector !== 'label' && selector !== 'hint') return;
+    if (selector !== 'label' && selector !== 'headerStrip' && selector !== 'hint') return;
     toggleGroupCollapse(name);
   });
 
@@ -2234,7 +2632,7 @@ Ref: post_tags.tag_id > tags.id
           if (p) el.position(p.x, p.y);
         });
         state.positions = Object.assign({}, state.positions, snap.positions);
-        localStorage.setItem(LS_KEYS.positions, JSON.stringify(state.positions));
+        localStorage.setItem(LS_KEYS.positions + '.' + state.activeModelType, JSON.stringify(state.positions));
       }
       if (snap.scale) {
         paper.scale(snap.scale.sx, snap.scale.sy);
@@ -2408,9 +2806,16 @@ Ref: post_tags.tag_id > tags.id
      10. TEMA VISUAL
      ========================================================================= */
   elThemeSelect.value = state.theme;
+  function applyCanvasBackground(theme) {
+    elPaperContainer.classList.remove('theme-bg-slate', 'theme-bg-cyberpunk', 'theme-bg-minimal');
+    elPaperContainer.classList.add('theme-bg-' + theme);
+  }
+  applyCanvasBackground(state.theme);
+
   elThemeSelect.addEventListener('change', function () {
     state.theme = elThemeSelect.value;
     localStorage.setItem(LS_KEYS.theme, state.theme);
+    applyCanvasBackground(state.theme);
     renderGraph(getDbml(), { keepPositions: true });
   });
 
@@ -2457,7 +2862,7 @@ Ref: post_tags.tag_id > tags.id
     }, 500);
 
     state.saveTimer = setTimeout(function () {
-      localStorage.setItem(LS_KEYS.dbml, getDbml());
+      persistModels();
       pushHistory(getDbml());
     }, 500);
   });
@@ -2467,7 +2872,7 @@ Ref: post_tags.tag_id > tags.id
     state.historyIndex -= 1;
     state.suppressHistoryPush = true;
     setDbml(state.history[state.historyIndex]);
-    localStorage.setItem(LS_KEYS.dbml, getDbml());
+    persistModels();
     renderGraph(getDbml());
     state.suppressHistoryPush = false;
     updateUndoRedoButtons();
@@ -2478,7 +2883,7 @@ Ref: post_tags.tag_id > tags.id
     state.historyIndex += 1;
     state.suppressHistoryPush = true;
     setDbml(state.history[state.historyIndex]);
-    localStorage.setItem(LS_KEYS.dbml, getDbml());
+    persistModels();
     renderGraph(getDbml());
     state.suppressHistoryPush = false;
     updateUndoRedoButtons();
@@ -2577,10 +2982,16 @@ Ref: post_tags.tag_id > tags.id
     elBtnProjectDel.disabled = !state.currentProjectId;
   }
 
+  function syncActiveModelIntoState() {
+    state.models[state.activeModelType] = getDbml();
+  }
+
   function buildProjectSnapshot(name, id) {
+    syncActiveModelIntoState();
     return {
       id, name,
-      dbml: getDbml(),
+      models: Object.assign({}, state.models),
+      activeModelType: state.activeModelType,
       positions: state.positions,
       theme: state.theme,
       layoutMode: state.layoutMode,
@@ -2613,7 +3024,7 @@ Ref: post_tags.tag_id > tags.id
   async function createNewProject() {
     const name = await showModal({
       title: 'Nuevo modelo',
-      message: 'Elige un nombre para guardar el estado actual del diagrama (texto DBML, posiciones, tema y layout).',
+      message: 'Guarda los 3 tipos de diagrama (DBML, UML y DFD) juntos, con sus posiciones, tema y layout.',
       withInput: true,
       defaultValue: 'Modelo sin título',
       confirmText: 'Guardar'
@@ -2658,19 +3069,27 @@ Ref: post_tags.tag_id > tags.id
       state.currentProjectId = id;
       state.suppressHistoryPush = true;
 
-      setDbml(snap.dbml || '');
+      // Compatibilidad con proyectos guardados antes de tener multi-modelo
+      // (solo tenían `dbml`, no `models`).
+      state.models = snap.models || { dbml: snap.dbml || '', uml: '', dfd: '' };
+      state.activeModelType = snap.activeModelType || 'dbml';
+      modelTypeButtons.forEach(b => b.classList.toggle('active', b.dataset.model === state.activeModelType));
+      cm.setOption('mode', state.activeModelType);
+      setDbml(state.models[state.activeModelType] || '');
+
       state.positions = snap.positions || {};
-      localStorage.setItem(LS_KEYS.positions, JSON.stringify(state.positions));
+      localStorage.setItem(LS_KEYS.positions + '.' + state.activeModelType, JSON.stringify(state.positions));
 
       state.theme = snap.theme || state.theme;
       elThemeSelect.value = state.theme;
       localStorage.setItem(LS_KEYS.theme, state.theme);
+      applyCanvasBackground(state.theme);
 
       state.layoutMode = snap.layoutMode || state.layoutMode;
       layoutButtons.forEach(b => b.classList.toggle('active', b.dataset.layout === state.layoutMode));
       localStorage.setItem(LS_KEYS.layout, state.layoutMode);
 
-      localStorage.setItem(LS_KEYS.dbml, getDbml());
+      persistModels();
       renderGraph(getDbml(), { keepPositions: true });
 
       state.history = [getDbml()];
@@ -2679,6 +3098,7 @@ Ref: post_tags.tag_id > tags.id
       state.suppressHistoryPush = false;
 
       refreshProjectSelect();
+      refreshGenerateFromOptions();
       setStatus('saved');
     } catch (e) {
       console.error('[DBML Studio] No se pudo cargar el modelo', id, e);
@@ -2689,6 +3109,192 @@ Ref: post_tags.tag_id > tags.id
   elBtnProjectSave.addEventListener('click', saveCurrentProject);
   elBtnProjectNew.addEventListener('click', createNewProject);
   elBtnProjectDel.addEventListener('click', deleteCurrentProject);
+
+  /* =========================================================================
+     12c. TIPOS DE MODELO (DBML / UML / DFD) Y GENERACIÓN CRUZADA
+     Cada tipo tiene su propio texto fuente (state.models). El borrador de
+     los 3 se guarda junto en localStorage; el proyecto guardado también
+     incluye los 3. "Generar desde" convierte usando una representación
+     genérica intermedia {entities, connections}, común a los tres formatos.
+     ========================================================================= */
+  function persistModels() {
+    syncActiveModelIntoState();
+    localStorage.setItem(LS_KEYS.models, JSON.stringify(state.models));
+    localStorage.setItem(LS_KEYS.activeModelType, state.activeModelType);
+  }
+
+  function switchModelType(type) {
+    if (type === state.activeModelType) return;
+    syncActiveModelIntoState();
+    state.activeModelType = type;
+
+    modelTypeButtons.forEach(b => b.classList.toggle('active', b.dataset.model === type));
+
+    // el modo de código (resaltado de sintaxis) de CodeMirror cambia según el tipo
+    cm.setOption('mode', type);
+
+    state.suppressHistoryPush = true;
+    setDbml(state.models[type] || '');
+    state.suppressHistoryPush = false;
+
+    state.positions = {}; // cada tipo de modelo tiene su propio lienzo/posiciones
+    try { state.positions = JSON.parse(localStorage.getItem(LS_KEYS.positions + '.' + type) || '{}'); } catch (e) { state.positions = {}; }
+    state.collapsedGroups = new Set();
+    clearSelection();
+
+    persistModels();
+    renderGraph(getDbml(), { keepPositions: Object.keys(state.positions).length > 0 });
+
+    state.history = [getDbml()];
+    state.historyIndex = 0;
+    updateUndoRedoButtons();
+
+    refreshGenerateFromOptions();
+    setStatus('saved');
+  }
+
+  modelTypeButtons.forEach(btn => {
+    btn.addEventListener('click', function () { switchModelType(btn.dataset.model); });
+  });
+
+  function refreshGenerateFromOptions() {
+    elGenerateFrom.innerHTML = '<option value="">⚡ Generar desde…</option>';
+    Object.keys(state.models).forEach(type => {
+      if (type === state.activeModelType) return;
+      const text = state.models[type];
+      if (!text || !text.trim()) return;
+      const opt = document.createElement('option');
+      opt.value = type;
+      opt.textContent = MODEL_LABELS[type] || type;
+      elGenerateFrom.appendChild(opt);
+    });
+  }
+
+  const MODEL_LABELS = { dbml: '📐 DBML / ER', uml: '🧩 UML', dfd: '🔀 DFD' };
+
+  /* --- Representación genérica intermedia: extraer de cualquier modelo --- */
+  function extractGeneric(type, text) {
+    const parser = type === 'uml' ? parseUML : (type === 'dfd' ? parseDFD : parseDBML);
+    const parsed = parser(text);
+    return {
+      entities: parsed.tables.map(t => ({
+        name: t.name,
+        fields: (t.fields || []).filter(f => !f.isMethod && !/\(\)$/.test(f.name)).map(f => ({ name: f.name, type: f.type || 'varchar', pk: !!f.pk }))
+      })),
+      connections: parsed.refs.map(r => ({
+        from: r.from.table, to: r.to.table,
+        label: r.label || (r.from.field && r.to.field ? (r.from.field + ' → ' + r.to.field) : ''),
+        cardinality: r.cardinality || { source: '1', target: '1' }
+      }))
+    };
+  }
+
+  function safeIdent(name) {
+    return stripAccents(String(name || 'entidad')).replace(/[^a-zA-Z0-9_]/g, '_').replace(/^(\d)/, '_$1') || 'entidad';
+  }
+
+  function buildDBMLFromGeneric(generic) {
+    let out = '// Generado automáticamente desde otro modelo.\n';
+    out += '// Revisa los campos: se preservaron los que tenían nombre/tipo explícito;\n';
+    out += '// el resto quedó con un TODO para completar a mano.\n\n';
+    generic.entities.forEach(e => {
+      out += 'Table ' + safeIdent(e.name) + ' {\n';
+      if (e.fields.length) {
+        let hasPk = e.fields.some(f => f.pk);
+        if (!hasPk) out += '  id int [pk, increment]\n';
+        e.fields.forEach(f => {
+          out += '  ' + safeIdent(f.name) + ' ' + (f.type || 'varchar') + (f.pk ? ' [pk]' : '') + '\n';
+        });
+      } else {
+        out += '  id int [pk, increment] // TODO: agregar más campos (no se pudieron inferir del origen)\n';
+      }
+      out += '}\n\n';
+    });
+    generic.connections.forEach(c => {
+      out += 'Ref: ' + safeIdent(c.from) + '.id > ' + safeIdent(c.to) + '.id';
+      if (c.label) out += ' // ' + c.label;
+      out += '\n';
+    });
+    return out;
+  }
+
+  function buildUMLFromGeneric(generic) {
+    let out = '// Generado automáticamente desde otro modelo.\n';
+    out += '// Revisa los tipos y visibilidades; se asumió "+" (público) por defecto.\n\n';
+    generic.entities.forEach(e => {
+      out += 'class ' + safeIdent(e.name) + ' {\n';
+      if (e.fields.length) {
+        e.fields.forEach(f => out += '  +' + safeIdent(f.name) + ': ' + (f.type || 'string') + '\n');
+      } else {
+        out += '  +id: int // TODO: agregar atributos\n';
+      }
+      out += '}\n\n';
+    });
+    generic.connections.forEach(c => {
+      const card = c.cardinality || {};
+      const src = card.source || '1', tgt = card.target || 'N';
+      out += safeIdent(c.from) + ' "' + src + '" --> "' + tgt + '" ' + safeIdent(c.to) + (c.label ? ' : ' + c.label : '') + '\n';
+    });
+    return out;
+  }
+
+  function buildDFDFromGeneric(generic) {
+    let out = '// Generado automáticamente desde otro modelo.\n';
+    out += '// Las entidades se mapearon como "Store" (almacenes de datos), ya que el\n';
+    out += '// modelo de origen no define procesos ni entidades externas explícitos.\n';
+    out += '// Agrega manualmente los Process/Entity que correspondan.\n\n';
+    generic.entities.forEach(e => {
+      out += 'Store ' + safeIdent(e.name) + ' "' + e.name + '"\n';
+    });
+    out += '\n';
+    generic.connections.forEach(c => {
+      out += safeIdent(c.from) + ' -> ' + safeIdent(c.to) + (c.label ? ' : "' + c.label + '"' : '') + '\n';
+    });
+    return out;
+  }
+
+  function buildFromGeneric(targetType, generic) {
+    if (targetType === 'uml') return buildUMLFromGeneric(generic);
+    if (targetType === 'dfd') return buildDFDFromGeneric(generic);
+    return buildDBMLFromGeneric(generic);
+  }
+
+  elGenerateFrom.addEventListener('change', async function () {
+    const fromType = elGenerateFrom.value;
+    elGenerateFrom.value = '';
+    if (!fromType) return;
+
+    const targetType = state.activeModelType;
+    const sourceText = fromType === state.activeModelType ? getDbml() : state.models[fromType];
+    if (!sourceText || !sourceText.trim()) return;
+
+    const currentHasContent = getDbml().trim().length > 0;
+    if (currentHasContent) {
+      const ok = await showModal({
+        title: 'Generar ' + (MODEL_LABELS[targetType] || targetType),
+        message: 'Esto va a REEMPLAZAR el contenido actual de ' + (MODEL_LABELS[targetType] || targetType) +
+          ' con lo generado a partir de ' + (MODEL_LABELS[fromType] || fromType) + '. ¿Continuar?',
+        confirmText: 'Generar y reemplazar'
+      });
+      if (!ok) return;
+    }
+
+    const generic = extractGeneric(fromType, sourceText);
+    const generated = buildFromGeneric(targetType, generic);
+
+    state.suppressHistoryPush = true;
+    setDbml(generated);
+    state.suppressHistoryPush = false;
+    persistModels();
+    renderGraph(getDbml());
+    pushHistory(getDbml());
+
+    await showAlert(
+      'Listo',
+      'Se generaron ' + generic.entities.length + ' entidad(es) y ' + generic.connections.length + ' relación(es) desde ' +
+      (MODEL_LABELS[fromType] || fromType) + '. Revisa el resultado — lo que no se pudo inferir queda marcado con TODO.'
+    );
+  });
 
   /* =========================================================================
      13. RESIZER (PANEL ARRASTRABLE)
@@ -2750,8 +3356,24 @@ Ref: post_tags.tag_id > tags.id
      ========================================================================= */
   (function init() {
     try {
-      const savedDbml = localStorage.getItem(LS_KEYS.dbml);
-      const initialText = savedDbml !== null ? savedDbml : DEFAULT_DBML;
+      // Restaura los 3 modelos guardados (o valores por defecto para cada uno)
+      let savedModels = null;
+      try { savedModels = JSON.parse(localStorage.getItem(LS_KEYS.models) || 'null'); } catch (e) { savedModels = null; }
+      const legacyDbml = localStorage.getItem(LS_KEYS.dbml); // compatibilidad con la versión previa a multi-modelo
+      state.models = savedModels || {
+        dbml: legacyDbml !== null ? legacyDbml : DEFAULT_DBML,
+        uml: DEFAULT_UML,
+        dfd: DEFAULT_DFD
+      };
+      state.activeModelType = localStorage.getItem(LS_KEYS.activeModelType) || 'dbml';
+      modelTypeButtons.forEach(b => b.classList.toggle('active', b.dataset.model === state.activeModelType));
+      cm.setOption('mode', state.activeModelType);
+
+      try {
+        state.positions = JSON.parse(localStorage.getItem(LS_KEYS.positions + '.' + state.activeModelType) || '{}');
+      } catch (e) { state.positions = {}; }
+
+      const initialText = state.models[state.activeModelType] || '';
       setDbml(initialText);
 
       layoutButtons.forEach(b => b.classList.toggle('active', b.dataset.layout === state.layoutMode));
@@ -2766,6 +3388,7 @@ Ref: post_tags.tag_id > tags.id
       setZoom(1);
       updateViewSlotsUI();
       refreshProjectSelect();
+      refreshGenerateFromOptions();
       setMobileView(state.mobileView);
       cm.refresh();
 
