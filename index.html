@@ -312,6 +312,9 @@
 
       <button id="btn-export-svg" class="tbtn" title="Exportar como SVG">⬇ SVG</button>
       <button id="btn-export-png" class="tbtn" title="Exportar como PNG">⬇ PNG</button>
+      <button id="btn-export-sql" class="tbtn" title="Exportar como SQL (CREATE TABLE + FOREIGN KEY)">⬇ SQL</button>
+      <button id="btn-import-sql" class="tbtn" title="Importar un archivo .sql y convertirlo a DBML">⬆ SQL</button>
+      <input id="sql-file-input" type="file" accept=".sql,.txt" class="hidden" />
 
       <div class="flex-1"></div>
 
@@ -438,6 +441,9 @@
   const elBtnDownloadDbml= document.getElementById('btn-download-dbml');
   const elBtnExportSvg   = document.getElementById('btn-export-svg');
   const elBtnExportPng   = document.getElementById('btn-export-png');
+  const elBtnExportSql   = document.getElementById('btn-export-sql');
+  const elBtnImportSql   = document.getElementById('btn-import-sql');
+  const elSqlFileInput   = document.getElementById('sql-file-input');
   const elBtnZoomIn      = document.getElementById('btn-zoom-in');
   const elBtnZoomOut     = document.getElementById('btn-zoom-out');
   const elBtnZoomFit     = document.getElementById('btn-zoom-fit');
@@ -756,6 +762,8 @@ P1 -> E1 : "Confirmación"
     rubberBand: null,           // datos del recuadro de selección en curso
     dragGroup: null,            // datos del arrastre múltiple en curso
     groupFrameDrag: null,       // datos del arrastre de un TableGroup completo (vía su marco)
+    collapsedGroupPositions: {}, // posición manual (si se arrastró) de cada chip de grupo colapsado
+    chipDrag: null,             // datos del arrastre en curso de un chip de grupo colapsado
     currentProjectId: null,     // id del modelo guardado actualmente cargado (o null si es el borrador sin guardar)
     snapEnabled: localStorage.getItem('dbmlstudio.snap') === '1',
     collapsedGroups: new Set(),  // nombres de TableGroup actualmente colapsados (solo de sesión)
@@ -1300,16 +1308,28 @@ P1 -> E1 : "Confirmación"
     const newLinks = [];
 
     // Tablas ocultas por pertenecer a un TableGroup colapsado (solo DBML por
-    // ahora): no se crean sus elementos ni los enlaces que las tocan.
-    const hiddenByCollapse = new Set();
+    // ahora): no se crean como elementos individuales; en su lugar, se crea
+    // UN chip por grupo colapsado y se registra en elementsByName bajo el
+    // nombre de CADA tabla miembro, para que las relaciones que las tocan se
+    // redirijan hacia el chip (en vez de perderse) — así el grupo colapsado
+    // conserva sus líneas de relación hacia el resto del diagrama.
+    const hiddenByCollapse = {}; // nombre de tabla -> nombre de grupo
     (parsed.groups || []).forEach(g => {
-      if (state.collapsedGroups.has(g.name)) g.tables.forEach(t => hiddenByCollapse.add(t));
+      if (state.collapsedGroups.has(g.name)) g.tables.forEach(t => { hiddenByCollapse[t] = g.name; });
+    });
+    const collapsedGroupNames = new Set(Object.values(hiddenByCollapse));
+    collapsedGroupNames.forEach(groupName => {
+      const g = (parsed.groups || []).find(x => x.name === groupName);
+      if (!g) return;
+      const chip = buildCollapsedChipElement(g, theme);
+      newElements.push(chip);
+      g.tables.forEach(t => { elementsByName[t] = chip; });
     });
 
     const isDFDNode = table => table.kind === 'process' || table.kind === 'entity' || table.kind === 'store';
 
     parsed.tables.forEach((table, idx) => {
-      if (hiddenByCollapse.has(table.name)) return;
+      if (hiddenByCollapse[table.name]) return; // ya cubierta por el chip de su grupo
       const headerColor = colorFor(table, idx, theme);
       const saved = state.positions[table.name];
       const pos = saved || { x: 80 + (idx % 4) * 280, y: 80 + Math.floor(idx / 4) * 220 };
@@ -1351,6 +1371,7 @@ P1 -> E1 : "Confirmación"
       const src = elementsByName[ref.from.table];
       const tgt = elementsByName[ref.to.table];
       if (!src || !tgt) return;
+      if (src.id === tgt.id) return; // relación interna al mismo grupo colapsado: no se dibuja como bucle
       const linkColor = THEMES[theme].linkColor;
       const link = new joint.dia.Link({
         id: 'ref_' + ref.from.table + '_' + ref.from.field + '_' + ref.to.table + '_' + ref.to.field + '_' + Math.random().toString(36).slice(2, 7),
@@ -1430,7 +1451,6 @@ P1 -> E1 : "Confirmación"
 
     paper.unfreeze();
     recomputeGroupFrames();
-    renderCollapsedChips();
     updateMinimap();
 
     // Reaplica la selección vigente (si las tablas siguen existiendo) y
@@ -1524,50 +1544,68 @@ P1 -> E1 : "Confirmación"
     });
   }
 
-  // Dibuja un "chip" compacto para cada TableGroup colapsado, en lugar del
-  // marco expandido. Usa el mismo id que el marco ('grp_'+nombre) para que
-  // solo exista una representación activa por grupo a la vez.
-  function renderCollapsedChips() {
-    const groups = (state.parsed && state.parsed.groups) || [];
-    const w = 220, h = 56;
-    groups.forEach(g => {
-      if (!state.collapsedGroups.has(g.name)) return;
-      let sumX = 0, sumY = 0, count = 0;
-      g.tables.forEach(t => {
-        const p = state.positions[t];
-        if (p) { sumX += p.x; sumY += p.y; count++; }
-      });
-      const x = count ? sumX / count : 80;
-      const y = count ? sumY / count : 80;
-      const id = groupElementId(g.name);
-
-      const el = new joint.dia.Element({ id, type: 'app.Group', position: { x, y }, size: { width: w, height: h }, z: 0 });
-      el.markup = [
-        { tagName: 'rect', selector: 'frame' },
-        { tagName: 'text', selector: 'label' },
-        { tagName: 'text', selector: 'hint' }
-      ];
-      el.attr('frame', {
-        width: w, height: h, fill: '#1e293b', stroke: '#6366f1',
-        strokeWidth: 1.5, strokeDasharray: '6,4', rx: 12, ry: 12, cursor: 'pointer'
-      });
-      el.attr('label', {
-        text: '▸ ' + g.name, x: 14, y: 24, fill: '#a5b4fc', fontSize: 12,
-        fontWeight: '700', fontFamily: 'Consolas, Menlo, monospace', cursor: 'pointer'
-      });
-      el.attr('hint', {
-        text: g.tables.length + ' tabla(s) ocultas — clic para expandir', x: 14, y: 40,
-        fill: '#94a3b8', fontSize: 9.5, fontFamily: 'Consolas, Menlo, monospace', cursor: 'pointer'
-      });
-      el.set('groupName', g.name, { silent: true });
-      el.set('collapsed', true, { silent: true });
-      graph.addCell(el);
+  // Calcula el "ancla natural" de un grupo colapsado: el promedio de las
+  // últimas posiciones conocidas de sus tablas miembro (antes de colapsar).
+  function computeChipAnchor(g) {
+    let sumX = 0, sumY = 0, count = 0;
+    g.tables.forEach(t => {
+      const p = state.positions[t];
+      if (p) { sumX += p.x; sumY += p.y; count++; }
     });
+    return count ? { x: sumX / count, y: sumY / count } : { x: 80, y: 80 };
+  }
+
+  // Construye (sin agregarlo todavía al grafo) el elemento "chip" compacto
+  // que representa un TableGroup colapsado. Si el usuario ya arrastró el
+  // chip manualmente, se respeta esa posición en vez de recalcularla.
+  function buildCollapsedChipElement(g, theme) {
+    const w = 220, h = 56;
+    const pos = state.collapsedGroupPositions[g.name] || computeChipAnchor(g);
+    const el = new joint.dia.Element({ id: groupElementId(g.name), type: 'app.Group', position: pos, size: { width: w, height: h }, z: 0 });
+    el.markup = [
+      { tagName: 'rect', selector: 'frame' },
+      { tagName: 'text', selector: 'label' },
+      { tagName: 'text', selector: 'hint' }
+    ];
+    el.attr('frame', {
+      width: w, height: h, fill: '#1e293b', stroke: '#6366f1',
+      strokeWidth: 1.5, strokeDasharray: '6,4', rx: 12, ry: 12, cursor: 'move'
+    });
+    el.attr('label', {
+      text: '▸ ' + g.name, x: 14, y: 24, fill: '#a5b4fc', fontSize: 12,
+      fontWeight: '700', fontFamily: 'Consolas, Menlo, monospace', cursor: 'pointer'
+    });
+    el.attr('hint', {
+      text: g.tables.length + ' tabla(s) ocultas — clic para expandir, arrastrar para mover', x: 14, y: 40,
+      fill: '#94a3b8', fontSize: 9.5, fontFamily: 'Consolas, Menlo, monospace', cursor: 'pointer'
+    });
+    el.set('groupName', g.name, { silent: true });
+    el.set('collapsed', true, { silent: true });
+    return el;
   }
 
   function toggleGroupCollapse(name) {
-    if (state.collapsedGroups.has(name)) state.collapsedGroups.delete(name);
-    else state.collapsedGroups.add(name);
+    if (state.collapsedGroups.has(name)) {
+      // Expandir: si el chip fue arrastrado manualmente, desplazamos las
+      // tablas miembro por el mismo delta, para que el grupo "se despliegue"
+      // en torno a donde lo dejaste, no donde estaba antes de colapsar.
+      const g = (state.parsed.groups || []).find(x => x.name === name);
+      const manualPos = state.collapsedGroupPositions[name];
+      if (g && manualPos) {
+        const anchor = computeChipAnchor(g);
+        const dx = manualPos.x - anchor.x, dy = manualPos.y - anchor.y;
+        if (dx || dy) {
+          g.tables.forEach(t => {
+            const p = state.positions[t];
+            if (p) state.positions[t] = { x: p.x + dx, y: p.y + dy };
+          });
+        }
+      }
+      delete state.collapsedGroupPositions[name];
+      state.collapsedGroups.delete(name);
+    } else {
+      state.collapsedGroups.add(name);
+    }
     renderGraph(getDbml(), { keepPositions: true });
   }
 
@@ -1983,11 +2021,22 @@ P1 -> E1 : "Confirmación"
     const model = elementView.model;
 
     if (model.get('type') === 'app.Group') {
-      // El título (headerStrip/label/hint) es exclusivo para colapsar/expandir
-      // (se maneja en element:pointerclick); acá solo interesa el cuerpo del marco.
+      // El título (headerStrip/label/hint) del marco EXPANDIDO es exclusivo
+      // para colapsar (se maneja en element:pointerclick); acá solo interesa
+      // el cuerpo del marco. En el chip COLAPSADO, en cambio, todo el cuerpo
+      // sirve tanto para arrastrar como (si no hubo arrastre) para expandir
+      // vía element:pointerclick.
+      const isCollapsedChip = !!model.get('collapsed');
       const selector = evt.target && evt.target.getAttribute && evt.target.getAttribute('joint-selector');
-      if (selector === 'headerStrip' || selector === 'label' || selector === 'hint') return;
-      if (model.get('collapsed')) return; // el chip colapsado no tiene tablas que seleccionar/mover
+      if (!isCollapsedChip && (selector === 'headerStrip' || selector === 'label' || selector === 'hint')) return;
+
+      if (isCollapsedChip) {
+        const groupName = model.get('groupName');
+        if (!groupName) return;
+        const p0 = getPointerXY(evt);
+        state.chipDrag = { groupName, startX: p0.x, startY: p0.y, startPos: model.position() };
+        return;
+      }
 
       const groupName = model.get('groupName');
       if (!groupName) return;
@@ -2058,6 +2107,29 @@ P1 -> E1 : "Confirmación"
   document.addEventListener('mousemove', handleGroupFrameDragMove);
   document.addEventListener('touchmove', handleGroupFrameDragMove, { passive: false });
   document.addEventListener('mouseup', handleGroupFrameDragEnd);
+
+  // Arrastre del chip de un TableGroup colapsado (grupo entero como bloque
+  // único). La posición final queda guardada para que, al expandir, las
+  // tablas miembro reaparezcan desplazadas por el mismo delta.
+  function handleChipDragMove(evt) {
+    if (!state.chipDrag) return;
+    const p = getPointerXY(evt);
+    const scale = paper.scale().sx || 1;
+    const dx = (p.x - state.chipDrag.startX) / scale;
+    const dy = (p.y - state.chipDrag.startY) / scale;
+    const el = graph.getCell(groupElementId(state.chipDrag.groupName));
+    if (el) el.position(state.chipDrag.startPos.x + dx, state.chipDrag.startPos.y + dy);
+  }
+  function handleChipDragEnd() {
+    if (!state.chipDrag) return;
+    const el = graph.getCell(groupElementId(state.chipDrag.groupName));
+    if (el) state.collapsedGroupPositions[state.chipDrag.groupName] = el.position();
+    state.chipDrag = null;
+  }
+  document.addEventListener('mousemove', handleChipDragMove);
+  document.addEventListener('touchmove', handleChipDragMove, { passive: false });
+  document.addEventListener('mouseup', handleChipDragEnd);
+  document.addEventListener('touchend', handleChipDragEnd);
   document.addEventListener('touchend', handleGroupFrameDragEnd);
 
   paper.on('element:pointermove', function (elementView) {
@@ -2595,7 +2667,9 @@ P1 -> E1 : "Confirmación"
     return {
       translate: paper.translate(),
       scale: paper.scale(),
-      positions
+      positions,
+      collapsedGroups: Array.from(state.collapsedGroups),
+      collapsedGroupPositions: Object.assign({}, state.collapsedGroupPositions)
     };
   }
 
@@ -2626,12 +2700,24 @@ P1 -> E1 : "Confirmación"
     if (!raw) { flashViewButton(slot, 'empty'); return; }
     try {
       const snap = JSON.parse(raw);
+
+      // Restaura primero qué grupos estaban colapsados/expandidos (y la
+      // posición manual de sus chips) y reconstruye el diagrama acorde a
+      // ESO antes de aplicar posiciones de tablas y cámara — si no, las
+      // posiciones guardadas no coinciden con los elementos que existen
+      // ahora mismo en el lienzo (colapsado vs expandido).
+      state.collapsedGroups = new Set(snap.collapsedGroups || []);
+      state.collapsedGroupPositions = Object.assign({}, snap.collapsedGroupPositions || {});
+      if (snap.positions) {
+        state.positions = Object.assign({}, state.positions, snap.positions);
+      }
+      renderGraph(getDbml(), { keepPositions: true });
+
       if (snap.positions) {
         getElements().forEach(el => {
           const p = snap.positions[el.get('tableName')];
           if (p) el.position(p.x, p.y);
         });
-        state.positions = Object.assign({}, state.positions, snap.positions);
         localStorage.setItem(LS_KEYS.positions + '.' + state.activeModelType, JSON.stringify(state.positions));
       }
       if (snap.scale) {
@@ -3183,6 +3269,8 @@ P1 -> E1 : "Confirmación"
       })),
       connections: parsed.refs.map(r => ({
         from: r.from.table, to: r.to.table,
+        fromField: r.from.field || 'id',
+        toField: r.to.field || 'id',
         label: r.label || (r.from.field && r.to.field ? (r.from.field + ' → ' + r.to.field) : ''),
         cardinality: r.cardinality || { source: '1', target: '1' }
       }))
@@ -3258,6 +3346,218 @@ P1 -> E1 : "Confirmación"
     if (targetType === 'dfd') return buildDFDFromGeneric(generic);
     return buildDBMLFromGeneric(generic);
   }
+
+  /* =========================================================================
+     12d. EXPORTAR / IMPORTAR SQL
+     ========================================================================= */
+  function mapTypeToSQL(type) {
+    const t = String(type || '').trim().toLowerCase();
+    const map = {
+      string: 'VARCHAR(255)', str: 'VARCHAR(255)', varchar: 'VARCHAR(255)',
+      int: 'INT', integer: 'INT', number: 'INT',
+      bool: 'BOOLEAN', boolean: 'BOOLEAN',
+      text: 'TEXT', float: 'FLOAT', double: 'DOUBLE',
+      date: 'DATE', datetime: 'DATETIME', timestamp: 'DATETIME',
+      decimal: 'DECIMAL(10,2)'
+    };
+    if (map[t]) return map[t];
+    if (!type) return 'VARCHAR(255)';
+    return /[a-zA-Z]/.test(type) ? type.toUpperCase() : 'VARCHAR(255)'; // ya parece un tipo SQL válido (ej. varchar(120))
+  }
+
+  function buildSQLFromGeneric(generic) {
+    let out = '-- Generado automáticamente por DBML Studio\n\n';
+    generic.entities.forEach(e => {
+      out += 'CREATE TABLE ' + safeIdent(e.name) + ' (\n';
+      const lines = [];
+      const pkFields = [];
+      if (e.fields.length) {
+        e.fields.forEach(f => {
+          const colName = safeIdent(f.name);
+          lines.push('  ' + colName + ' ' + mapTypeToSQL(f.type) + (f.pk ? ' NOT NULL' : ''));
+          if (f.pk) pkFields.push(colName);
+        });
+      } else {
+        lines.push('  id INT NOT NULL');
+        pkFields.push('id');
+      }
+      if (pkFields.length) lines.push('  PRIMARY KEY (' + pkFields.join(', ') + ')');
+      out += lines.join(',\n') + '\n);\n\n';
+    });
+
+    generic.connections.forEach((c, i) => {
+      if (c.from === c.to) return; // evita una FK de una tabla hacia sí misma por datos ambiguos
+      const constraintName = 'fk_' + safeIdent(c.from) + '_' + safeIdent(c.to) + '_' + (i + 1);
+      out += 'ALTER TABLE ' + safeIdent(c.from) +
+        ' ADD CONSTRAINT ' + constraintName +
+        ' FOREIGN KEY (' + safeIdent(c.fromField) + ')' +
+        ' REFERENCES ' + safeIdent(c.to) + ' (' + safeIdent(c.toField) + ');\n';
+    });
+
+    return out;
+  }
+
+  // Separa por comas de nivel superior, respetando paréntesis anidados
+  // (necesario porque tipos como VARCHAR(255) o DECIMAL(10,2) contienen comas).
+  function splitTopLevelCommas(str) {
+    const parts = [];
+    let depth = 0, current = '';
+    for (let i = 0; i < str.length; i++) {
+      const ch = str[i];
+      if (ch === '(') depth++;
+      if (ch === ')') depth--;
+      if (ch === ',' && depth === 0) { parts.push(current); current = ''; }
+      else current += ch;
+    }
+    if (current.trim()) parts.push(current);
+    return parts;
+  }
+
+  function stripIdentQuotes(s) { return (s || '').trim().replace(/^[`"\[]|[`"\]]$/g, ''); }
+
+  // Parser SQL pragmático: soporta CREATE TABLE con columnas, PRIMARY KEY
+  // (inline o como línea separada) y FOREIGN KEY (inline, o vía ALTER TABLE
+  // ... ADD FOREIGN KEY). No pretende cubrir el 100% del dialecto SQL de
+  // cada motor, pero sí los patrones más comunes de un dump/export típico.
+  function parseSQL(sqlText) {
+    const entities = [];
+    const connections = [];
+    const cleaned = sqlText.replace(/--.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
+
+    const createRe = /CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?[`"\[]?(\w+)[`"\]]?\s*\(([\s\S]*?)\)\s*(?:ENGINE[^;]*)?;/gi;
+    let m;
+    while ((m = createRe.exec(cleaned)) !== null) {
+      const tableName = m[1];
+      const fields = [];
+      const tablePKs = [];
+      const inlineFKs = [];
+
+      splitTopLevelCommas(m[2]).forEach(rawPart => {
+        const part = rawPart.trim();
+        if (!part) return;
+
+        const pkMatch = part.match(/^PRIMARY\s+KEY\s*\(([^)]+)\)/i);
+        if (pkMatch) {
+          pkMatch[1].split(',').forEach(c => tablePKs.push(stripIdentQuotes(c)));
+          return;
+        }
+        const fkMatch = part.match(/^(?:CONSTRAINT\s+\w+\s+)?FOREIGN\s+KEY\s*\(([^)]+)\)\s*REFERENCES\s+[`"\[]?(\w+)[`"\]]?\s*\(([^)]+)\)/i);
+        if (fkMatch) {
+          inlineFKs.push({ field: stripIdentQuotes(fkMatch[1]), refTable: fkMatch[2], refField: stripIdentQuotes(fkMatch[3]) });
+          return;
+        }
+        if (/^(UNIQUE|KEY|INDEX|CONSTRAINT\s+\w+\s+UNIQUE)/i.test(part)) return; // índices sueltos: no se traducen
+
+        const colMatch = part.match(/^[`"\[]?(\w+)[`"\]]?\s+([a-zA-Z][a-zA-Z0-9]*(?:\([^)]*\))?)/);
+        if (colMatch) {
+          const name = colMatch[1];
+          const type = colMatch[2];
+          const isPk = /PRIMARY\s+KEY/i.test(part);
+          fields.push({ name, type, pk: isPk });
+          const colFk = part.match(/REFERENCES\s+[`"\[]?(\w+)[`"\]]?\s*\(([^)]+)\)/i);
+          if (colFk) inlineFKs.push({ field: name, refTable: colFk[1], refField: stripIdentQuotes(colFk[2]) });
+        }
+      });
+
+      tablePKs.forEach(pkName => {
+        const f = fields.find(x => x.name.toLowerCase() === pkName.toLowerCase());
+        if (f) f.pk = true;
+      });
+
+      entities.push({ name: tableName, fields });
+      inlineFKs.forEach(fk => {
+        connections.push({ from: tableName, to: fk.refTable, fromField: fk.field, toField: fk.refField });
+      });
+    }
+
+    const alterRe = /ALTER\s+TABLE\s+[`"\[]?(\w+)[`"\]]?\s+ADD\s+(?:CONSTRAINT\s+\w+\s+)?FOREIGN\s+KEY\s*\(([^)]+)\)\s*REFERENCES\s+[`"\[]?(\w+)[`"\]]?\s*\(([^)]+)\)/gi;
+    while ((m = alterRe.exec(cleaned)) !== null) {
+      connections.push({
+        from: m[1], to: m[3],
+        fromField: stripIdentQuotes(m[2]), toField: stripIdentQuotes(m[4])
+      });
+    }
+
+    return { entities, connections };
+  }
+
+  function buildDBMLFromSQLGeneric(generic) {
+    let out = '// Importado desde SQL.\n\n';
+    generic.entities.forEach(e => {
+      out += 'Table ' + safeIdent(e.name) + ' {\n';
+      if (e.fields.length) {
+        e.fields.forEach(f => {
+          out += '  ' + safeIdent(f.name) + ' ' + (f.type || 'varchar') + (f.pk ? ' [pk]' : '') + '\n';
+        });
+      } else {
+        out += '  id int [pk]\n';
+      }
+      out += '}\n\n';
+    });
+
+    const seen = new Set();
+    generic.connections.forEach(c => {
+      if (!c.from || !c.to) return;
+      const key = c.from + '.' + c.fromField + '>' + c.to + '.' + c.toField;
+      if (seen.has(key)) return; // evita duplicar una FK declarada dos veces en el SQL de origen (inline + ALTER TABLE)
+      seen.add(key);
+      out += 'Ref: ' + safeIdent(c.from) + '.' + safeIdent(c.fromField) + ' > ' + safeIdent(c.to) + '.' + safeIdent(c.toField) + '\n';
+    });
+    return out;
+  }
+
+  elBtnExportSql.addEventListener('click', function () {
+    if (!getDbml().trim()) return;
+    const generic = extractGeneric(state.activeModelType, getDbml());
+    if (!generic.entities.length) return;
+    const sql = buildSQLFromGeneric(generic);
+    download('esquema.sql', sql, 'text/plain');
+  });
+
+  elBtnImportSql.addEventListener('click', function () {
+    elSqlFileInput.value = '';
+    elSqlFileInput.click();
+  });
+
+  elSqlFileInput.addEventListener('change', async function () {
+    const file = elSqlFileInput.files && elSqlFileInput.files[0];
+    if (!file) return;
+    const text = await file.text();
+    const parsedSQL = parseSQL(text);
+
+    if (!parsedSQL.entities.length) {
+      await showAlert('No se encontraron tablas', 'No se pudo reconocer ningún "CREATE TABLE" válido en el archivo.');
+      return;
+    }
+
+    if (state.activeModelType !== 'dbml') {
+      await showAlert('Cambiando a DBML', 'La importación de SQL genera un modelo DBML/ER. Se va a cambiar a esa pestaña.');
+      switchModelType('dbml');
+    }
+
+    const currentHasContent = getDbml().trim().length > 0;
+    if (currentHasContent) {
+      const ok = await showModal({
+        title: 'Importar SQL',
+        message: 'Esto va a REEMPLAZAR el contenido actual de DBML con lo importado desde "' + file.name + '". ¿Continuar?',
+        confirmText: 'Importar y reemplazar'
+      });
+      if (!ok) return;
+    }
+
+    const dbmlText = buildDBMLFromSQLGeneric(parsedSQL);
+    state.suppressHistoryPush = true;
+    setDbml(dbmlText);
+    state.suppressHistoryPush = false;
+    persistModels();
+    renderGraph(getDbml());
+    pushHistory(getDbml());
+
+    await showAlert(
+      'Importado',
+      'Se importaron ' + parsedSQL.entities.length + ' tabla(s) y ' + parsedSQL.connections.length + ' relación(es) desde "' + file.name + '".'
+    );
+  });
 
   elGenerateFrom.addEventListener('change', async function () {
     const fromType = elGenerateFrom.value;
