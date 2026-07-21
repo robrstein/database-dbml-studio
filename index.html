@@ -107,6 +107,7 @@
   .te-field-row .te-fname { flex:1.2; min-width:0; }
   .te-field-row .te-ftype { flex:1; min-width:0; }
   .te-field-row .te-fpk { width:15px; height:15px; accent-color:#6366f1; flex-shrink:0; }
+  .te-field-row .te-fvis { flex:0 0 44px; padding:.35rem .2rem; font-size:12px; text-align:center; }
   .te-field-row .te-fdel {
     flex-shrink:0; width:22px; height:22px; border-radius:.4rem; border:1px solid #334155;
     background:#1e293b; color:#f87171; cursor:pointer; font-size:11px; line-height:1;
@@ -216,6 +217,10 @@
       <button id="btn-project-save" class="tbtn" title="Guardar cambios en el modelo actual" disabled>💾</button>
       <button id="btn-project-new" class="tbtn" title="Guardar el estado actual como un nuevo modelo">＋ Nuevo</button>
       <button id="btn-project-delete" class="tbtn" title="Eliminar el modelo actual" disabled>🗑</button>
+      <div class="w-px h-6 bg-slate-700 mx-1"></div>
+      <button id="btn-export-json" class="tbtn" title="Exportar el proyecto completo (los 3 modelos, posiciones, tema) como archivo .json">⬇ JSON</button>
+      <button id="btn-import-json" class="tbtn" title="Importar un proyecto completo desde un archivo .json">⬆ JSON</button>
+      <input id="json-file-input" type="file" accept=".json" class="hidden" />
     </div>
 
     <div class="flex items-center gap-1.5 px-2 py-2 bg-slate-800/70 border-b border-slate-700 flex-wrap">
@@ -400,6 +405,9 @@
   const elBtnProjectSave = document.getElementById('btn-project-save');
   const elBtnProjectNew  = document.getElementById('btn-project-new');
   const elBtnProjectDel  = document.getElementById('btn-project-delete');
+  const elBtnExportJson  = document.getElementById('btn-export-json');
+  const elBtnImportJson  = document.getElementById('btn-import-json');
+  const elJsonFileInput  = document.getElementById('json-file-input');
   const modelTypeButtons = Array.from(document.querySelectorAll('.model-type-btn'));
   const elGenerateFrom   = document.getElementById('generate-from-select');
   const elModalOverlay   = document.getElementById('modal-overlay');
@@ -2258,13 +2266,39 @@ P1 -> E1 : "Confirmación"
   }
 
   function findNamedBlockInSource(sourceText, name) {
-    return findBlockByKeyword(sourceText, 'Table', name) || findBlockByKeyword(sourceText, 'Enum', name);
+    return findBlockByKeyword(sourceText, 'Table', name) || findBlockByKeyword(sourceText, 'Enum', name) || findBlockByKeyword(sourceText, 'class', name);
+  }
+
+  // Los nodos DFD no son bloques "{ }", son una sola línea:
+  // Process|Entity|Store <id> "Etiqueta". Se ubican por su etiqueta (que es
+  // lo que usamos como "nombre" del elemento en toda la app).
+  function findDFDNodeLineInSource(sourceText, label) {
+    const lines = sourceText.split('\n');
+    const re = /^(\s*)(Process|Entity|Store)\s+([a-zA-Z0-9_]+)\s+"([^"]*)"/i;
+    for (let i = 0; i < lines.length; i++) {
+      const m = lines[i].match(re);
+      if (m && m[4] === label) return { lineIndex: i, indent: m[1], kind: m[2], id: m[3], label: m[4] };
+    }
+    return null;
+  }
+
+  function generateUniqueDFDLabel(base, sourceText) {
+    let n = 1, candidate = base + ' copy';
+    while (new RegExp('"' + escapeRegex(candidate) + '"').test(sourceText)) { n += 1; candidate = base + ' copy' + n; }
+    return candidate;
+  }
+
+  function generateUniqueDFDId(kind, sourceText) {
+    const prefix = (kind || 'N').charAt(0).toUpperCase();
+    let n = 1;
+    while (new RegExp('\\b' + prefix + n + '\\b').test(sourceText)) n += 1;
+    return prefix + n;
   }
 
   function generateUniqueTableName(base, sourceText) {
     let n = 1;
     let candidate = base + '_copy';
-    while (new RegExp('\\b(Table|Enum)\\s+"?' + escapeRegex(candidate) + '"?\\b').test(sourceText)) {
+    while (new RegExp('\\b(Table|Enum|class)\\s+"?' + escapeRegex(candidate) + '"?\\b').test(sourceText)) {
       n += 1;
       candidate = base + '_copy' + n;
     }
@@ -2285,41 +2319,100 @@ P1 -> E1 : "Confirmación"
   function deleteSelectedTables() {
     const names = selectedElementsList().map(el => el.get('tableName')).filter(Boolean);
     if (!names.length) return;
+    const modelType = state.activeModelType;
     let text = getDbml();
-    names.forEach(name => {
-      const block = findNamedBlockInSource(text, name);
-      if (block) text = text.slice(0, block.start) + text.slice(block.end);
-    });
-    // limpia además cualquier línea "Ref:" que mencione alguna tabla eliminada
-    const refLineRe = /^\s*Ref\s*(?:[a-zA-Z0-9_]+)?\s*:\s*([a-zA-Z0-9_]+)\.[a-zA-Z0-9_]+\s*(?:<>|>|<|-)\s*([a-zA-Z0-9_]+)\./i;
-    text = text.split('\n').filter(line => {
-      const m = line.match(refLineRe);
-      if (!m) return true;
-      return names.indexOf(m[1]) === -1 && names.indexOf(m[2]) === -1;
-    }).join('\n');
+
+    if (modelType === 'dfd') {
+      const ids = [];
+      names.forEach(name => {
+        const loc = findDFDNodeLineInSource(text, name);
+        if (loc) ids.push(loc.id);
+      });
+      const nodeRe = /^\s*(Process|Entity|Store)\s+([a-zA-Z0-9_]+)\s+"([^"]*)"/i;
+      text = text.split('\n').filter(line => {
+        const nm = line.match(nodeRe);
+        if (nm && names.indexOf(nm[3]) !== -1) return false;
+        const flowM = line.trim().match(/^([a-zA-Z0-9_]+)\s*->\s*([a-zA-Z0-9_]+)/);
+        if (flowM && (ids.indexOf(flowM[1]) !== -1 || ids.indexOf(flowM[2]) !== -1)) return false;
+        return true;
+      }).join('\n');
+    } else {
+      names.forEach(name => {
+        const block = findNamedBlockInSource(text, name);
+        if (block) text = text.slice(0, block.start) + text.slice(block.end);
+      });
+      if (modelType === 'uml') {
+        text = text.split('\n').filter(line => {
+          const trimmed = line.trim();
+          if (!trimmed || /^\/\//.test(trimmed) || /^class\b/i.test(trimmed)) return true;
+          const assoc = trimmed.match(/^([a-zA-Z0-9_]+)\s*(?:"[^"]*")?\s*-->\s*(?:"[^"]*")?\s*([a-zA-Z0-9_]+)/);
+          const inherit = trimmed.match(/^([a-zA-Z0-9_]+)\s*<\|--\s*([a-zA-Z0-9_]+)/);
+          const m = assoc || inherit;
+          if (!m) return true;
+          return names.indexOf(m[1]) === -1 && names.indexOf(m[2]) === -1;
+        }).join('\n');
+      } else {
+        // limpia además cualquier línea "Ref:" que mencione alguna tabla eliminada
+        const refLineRe = /^\s*Ref\s*(?:[a-zA-Z0-9_]+)?\s*:\s*([a-zA-Z0-9_]+)\.[a-zA-Z0-9_]+\s*(?:<>|>|<|-)\s*([a-zA-Z0-9_]+)\./i;
+        text = text.split('\n').filter(line => {
+          const m = line.match(refLineRe);
+          if (!m) return true;
+          return names.indexOf(m[1]) === -1 && names.indexOf(m[2]) === -1;
+        }).join('\n');
+      }
+    }
 
     clearSelection();
     applyDbmlEdit(text);
   }
 
+  // Elimina una única entidad por nombre (usada por el botón "Eliminar" del
+  // editor visual de tabla/clase/nodo): la selecciona y reutiliza la misma
+  // lógica generalizada de arriba, para no duplicar el manejo por tipo.
+  function deleteEntityByName(name) {
+    clearSelection();
+    const el = graph.getCell('tbl_' + name);
+    if (el) {
+      selectElement(el.id);
+      deleteSelectedTables();
+    }
+  }
+
   function duplicateSelectedTables() {
     const els = selectedElementsList().filter(el => el.get('tableName'));
     if (!els.length) return;
+    const modelType = state.activeModelType;
     let text = getDbml();
     const pairs = [];
-    els.forEach(el => {
-      const name = el.get('tableName');
-      const block = findNamedBlockInSource(text, name);
-      if (!block) return;
-      const blockText = text.slice(block.start, block.end);
-      const newName = generateUniqueTableName(name, text);
-      const renamed = blockText.replace(
-        new RegExp('^(' + block.keyword + ')(\\s+)"?' + escapeRegex(name) + '"?'),
-        '$1$2' + newName
-      );
-      text = text.slice(0, block.end) + '\n' + renamed + text.slice(block.end);
-      pairs.push({ oldName: name, newName: newName });
-    });
+
+    if (modelType === 'dfd') {
+      els.forEach(el => {
+        const name = el.get('tableName');
+        const loc = findDFDNodeLineInSource(text, name);
+        if (!loc) return;
+        const newLabel = generateUniqueDFDLabel(name, text);
+        const newId = generateUniqueDFDId(loc.kind, text);
+        const kindLabel = loc.kind.charAt(0).toUpperCase() + loc.kind.slice(1).toLowerCase();
+        const lines = text.split('\n');
+        lines.splice(loc.lineIndex + 1, 0, loc.indent + kindLabel + ' ' + newId + ' "' + newLabel + '"');
+        text = lines.join('\n');
+        pairs.push({ oldName: name, newName: newLabel });
+      });
+    } else {
+      els.forEach(el => {
+        const name = el.get('tableName');
+        const block = findNamedBlockInSource(text, name);
+        if (!block) return;
+        const blockText = text.slice(block.start, block.end);
+        const newName = generateUniqueTableName(name, text);
+        const renamed = blockText.replace(
+          new RegExp('^(' + block.keyword + ')(\\s+)"?' + escapeRegex(name) + '"?'),
+          '$1$2' + newName
+        );
+        text = text.slice(0, block.end) + '\n' + renamed + text.slice(block.end);
+        pairs.push({ oldName: name, newName: newName });
+      });
+    }
     if (!pairs.length) return;
 
     applyDbmlEdit(text);
@@ -2382,46 +2475,54 @@ P1 -> E1 : "Confirmación"
     return 'Enum ' + name + settings + ' {\n' + lines.join('\n') + '\n}';
   }
 
-  function deleteTableByName(name) {
-    let text = getDbml();
-    const block = findNamedBlockInSource(text, name);
-    if (block) text = text.slice(0, block.start) + text.slice(block.end);
-    const refLineRe = /^\s*Ref\s*(?:[a-zA-Z0-9_]+)?\s*:\s*([a-zA-Z0-9_]+)\.[a-zA-Z0-9_]+\s*(?:<>|>|<|-)\s*([a-zA-Z0-9_]+)\./i;
-    text = text.split('\n').filter(line => {
-      const m = line.match(refLineRe);
-      if (!m) return true;
-      return m[1] !== name && m[2] !== name;
-    }).join('\n');
-    clearSelection();
-    applyDbmlEdit(text);
+  function buildUMLClassBlockText(name, color, fields) {
+    const settings = color ? ' [headercolor: ' + color + ']' : '';
+    const lines = fields.map(f => {
+      const vis = f.visibility || '+';
+      const isMethod = /\(\)$/.test(f.name);
+      return '  ' + vis + f.name + (isMethod ? (f.type ? ': ' + f.type : '') : ': ' + (f.type || 'string'));
+    });
+    return 'class ' + name + settings + ' {\n' + lines.join('\n') + '\n}';
   }
 
-  function createFieldRow(field, isEnum) {
+  function createFieldRow(field, isEnum, modelType) {
     const row = document.createElement('div');
     row.className = 'te-field-row';
 
     const nameInput = document.createElement('input');
     nameInput.type = 'text';
     nameInput.className = 'te-fname';
-    nameInput.placeholder = isEnum ? 'valor' : 'nombre_campo';
+    nameInput.placeholder = isEnum ? 'valor' : (modelType === 'uml' ? 'nombre (o metodo())' : 'nombre_campo');
     nameInput.value = field ? field.name : '';
     row.appendChild(nameInput);
 
-    let typeInput = null, pkInput = null;
+    let typeInput = null, pkInput = null, visSelect = null;
     if (!isEnum) {
       typeInput = document.createElement('input');
       typeInput.type = 'text';
       typeInput.className = 'te-ftype';
-      typeInput.placeholder = 'tipo (ej. varchar)';
+      typeInput.placeholder = modelType === 'uml' ? 'tipo (opcional)' : 'tipo (ej. varchar)';
       typeInput.value = field ? field.type : '';
       row.appendChild(typeInput);
 
-      pkInput = document.createElement('input');
-      pkInput.type = 'checkbox';
-      pkInput.className = 'te-fpk';
-      pkInput.title = 'Llave primaria (PK)';
-      pkInput.checked = !!(field && field.pk);
-      row.appendChild(pkInput);
+      if (modelType === 'uml') {
+        visSelect = document.createElement('select');
+        visSelect.className = 'tsel te-fvis';
+        ['+', '-', '#', '~'].forEach(v => {
+          const opt = document.createElement('option');
+          opt.value = v; opt.textContent = v;
+          if (field && field.visibility === v) opt.selected = true;
+          visSelect.appendChild(opt);
+        });
+        row.appendChild(visSelect);
+      } else {
+        pkInput = document.createElement('input');
+        pkInput.type = 'checkbox';
+        pkInput.className = 'te-fpk';
+        pkInput.title = 'Llave primaria (PK)';
+        pkInput.checked = !!(field && field.pk);
+        row.appendChild(pkInput);
+      }
     }
 
     const delBtn = document.createElement('button');
@@ -2436,7 +2537,8 @@ P1 -> E1 : "Confirmación"
       return {
         name: nameInput.value.trim(),
         type: typeInput ? typeInput.value.trim() : '',
-        pk: pkInput ? pkInput.checked : false
+        pk: pkInput ? pkInput.checked : false,
+        visibility: visSelect ? visSelect.value : undefined
       };
     };
     return row;
@@ -2447,15 +2549,40 @@ P1 -> E1 : "Confirmación"
     if (!name) return;
     const tableData = (state.parsed.tables || []).find(t => t.name === name);
     if (!tableData) return;
+    const modelType = state.activeModelType;
 
-    state.tableEditorContext = { name: name, isEnum: !!tableData.isEnum };
-    elTeTitle.textContent = tableData.isEnum ? 'Editar enum' : 'Editar tabla';
-    elTeTypeBadge.textContent = tableData.isEnum ? 'ENUM' : 'TABLE';
+    state.tableEditorContext = { name: name, isEnum: !!tableData.isEnum, modelType: modelType, kind: tableData.kind || null };
     elTeName.value = name;
-    elTeFieldsLabel.textContent = tableData.isEnum ? 'Valores' : 'Campos';
     elTeFields.innerHTML = '';
-    tableData.fields.forEach(f => elTeFields.appendChild(createFieldRow(f, tableData.isEnum)));
-    elTeAddField.textContent = tableData.isEnum ? '＋ Agregar valor' : '＋ Agregar campo';
+
+    if (modelType === 'dfd') {
+      elTeTitle.textContent = 'Editar nodo DFD';
+      elTeTypeBadge.textContent = (tableData.kind || '').toUpperCase();
+      elTeFieldsLabel.textContent = 'Tipo de nodo';
+      elTeAddField.classList.add('hidden');
+
+      const kindRow = document.createElement('div');
+      kindRow.className = 'te-field-row';
+      const kindSelect = document.createElement('select');
+      kindSelect.className = 'tsel';
+      kindSelect.style.flex = '1';
+      [['process', 'Process (proceso)'], ['entity', 'Entity (entidad externa)'], ['store', 'Store (almacén de datos)']].forEach(([val, label]) => {
+        const opt = document.createElement('option');
+        opt.value = val; opt.textContent = label;
+        if (val === tableData.kind) opt.selected = true;
+        kindSelect.appendChild(opt);
+      });
+      kindRow.appendChild(kindSelect);
+      elTeFields.appendChild(kindRow);
+      state.tableEditorContext.dfdKindSelect = kindSelect;
+    } else {
+      elTeAddField.classList.remove('hidden');
+      elTeTitle.textContent = tableData.isEnum ? 'Editar enum' : (modelType === 'uml' ? 'Editar clase' : 'Editar tabla');
+      elTeTypeBadge.textContent = tableData.isEnum ? 'ENUM' : (modelType === 'uml' ? 'CLASS' : 'TABLE');
+      elTeFieldsLabel.textContent = tableData.isEnum ? 'Valores' : (modelType === 'uml' ? 'Atributos / métodos' : 'Campos');
+      tableData.fields.forEach(f => elTeFields.appendChild(createFieldRow(f, tableData.isEnum, modelType)));
+      elTeAddField.textContent = tableData.isEnum ? '＋ Agregar valor' : '＋ Agregar campo';
+    }
 
     elTeOverlay.classList.remove('hidden');
     setTimeout(function () { elTeName.focus(); elTeName.select(); }, 30);
@@ -2468,7 +2595,6 @@ P1 -> E1 : "Confirmación"
 
   paper.on('element:pointerdblclick', function (elementView) {
     if (elementView.model.get('type') === 'app.Group') return;
-    if (state.activeModelType !== 'dbml') return; // el editor visual de campos por ahora es específico de DBML
     openTableEditor(elementView.model);
   });
 
@@ -2490,8 +2616,8 @@ P1 -> E1 : "Confirmación"
   });
 
   elTeAddField.addEventListener('click', function () {
-    if (!state.tableEditorContext) return;
-    const row = createFieldRow(null, state.tableEditorContext.isEnum);
+    if (!state.tableEditorContext || state.tableEditorContext.modelType === 'dfd') return;
+    const row = createFieldRow(null, state.tableEditorContext.isEnum, state.tableEditorContext.modelType);
     elTeFields.appendChild(row);
     row.querySelector('input').focus();
   });
@@ -2502,7 +2628,7 @@ P1 -> E1 : "Confirmación"
     if (!state.tableEditorContext) return;
     const name = state.tableEditorContext.name;
     hideTableEditor();
-    deleteTableByName(name);
+    deleteEntityByName(name);
   });
 
   elTeSave.addEventListener('click', async function () {
@@ -2511,23 +2637,39 @@ P1 -> E1 : "Confirmación"
     const newName = elTeName.value.trim();
     if (!newName) { await showAlert('Nombre requerido', 'Debes indicar un nombre.'); return; }
 
+    let text = getDbml();
+
+    // --- DFD: no es un bloque, es una sola línea "Kind id \"Etiqueta\"" ---
+    if (ctx.modelType === 'dfd') {
+      const loc = findDFDNodeLineInSource(text, ctx.name);
+      if (!loc) { hideTableEditor(); return; }
+      const newKind = ctx.dfdKindSelect ? ctx.dfdKindSelect.value : (ctx.kind || 'entity');
+      const kindLabel = newKind.charAt(0).toUpperCase() + newKind.slice(1);
+      const lines = text.split('\n');
+      lines[loc.lineIndex] = loc.indent + kindLabel + ' ' + loc.id + ' "' + newName.replace(/"/g, '') + '"';
+      text = lines.join('\n');
+      hideTableEditor();
+      applyDbmlEdit(text);
+      return;
+    }
+
     const rows = Array.from(elTeFields.children);
-    const fields = rows.map(r => r.__getField()).filter(f => f.name);
+    const fields = rows.map(r => r.__getField ? r.__getField() : null).filter(f => f && f.name);
     if (!fields.length) {
       await showAlert('Faltan campos', ctx.isEnum ? 'Agrega al menos un valor.' : 'Agrega al menos un campo.');
       return;
     }
 
-    let text = getDbml();
-    const block = findNamedBlockInSource(text, ctx.name);
+    const keyword = ctx.modelType === 'uml' ? 'class' : (ctx.isEnum ? 'Enum' : 'Table');
+    const block = findBlockByKeyword(text, keyword, ctx.name);
     if (!block) { hideTableEditor(); return; }
 
     const originalTableData = (state.parsed.tables || []).find(t => t.name === ctx.name);
     const color = originalTableData ? originalTableData.color : null;
 
-    const newBlockText = ctx.isEnum
-      ? buildEnumBlockText(newName, color, fields)
-      : buildTableBlockText(newName, color, fields);
+    const newBlockText = ctx.modelType === 'uml'
+      ? buildUMLClassBlockText(newName, color, fields)
+      : (ctx.isEnum ? buildEnumBlockText(newName, color, fields) : buildTableBlockText(newName, color, fields));
 
     text = text.slice(0, block.start) + newBlockText + text.slice(block.end);
 
@@ -3195,6 +3337,131 @@ P1 -> E1 : "Confirmación"
   elBtnProjectSave.addEventListener('click', saveCurrentProject);
   elBtnProjectNew.addEventListener('click', createNewProject);
   elBtnProjectDel.addEventListener('click', deleteCurrentProject);
+
+  /* =========================================================================
+     12b2. EXPORTAR / IMPORTAR PROYECTO COMPLETO COMO JSON
+     A diferencia de "Modelos guardados" (que vive en localStorage de este
+     navegador), esto genera un archivo real que se puede compartir con otra
+     persona o llevar a otra máquina. Incluye los 3 tipos de modelo, sus
+     posiciones (una por tipo), tema, layout y estado de colapso de grupos.
+     ========================================================================= */
+  function buildFullExportSnapshot(name) {
+    syncActiveModelIntoState();
+    const positionsByType = {};
+    ['dbml', 'uml', 'dfd'].forEach(type => {
+      if (type === state.activeModelType) {
+        positionsByType[type] = state.positions;
+      } else {
+        try { positionsByType[type] = JSON.parse(localStorage.getItem(LS_KEYS.positions + '.' + type) || '{}'); }
+        catch (e) { positionsByType[type] = {}; }
+      }
+    });
+    return {
+      formatVersion: 1,
+      app: 'DBML Studio',
+      name: name || 'Proyecto DBML Studio',
+      exportedAt: new Date().toISOString(),
+      models: Object.assign({}, state.models),
+      activeModelType: state.activeModelType,
+      positionsByType,
+      theme: state.theme,
+      layoutMode: state.layoutMode,
+      collapsedGroups: Array.from(state.collapsedGroups),
+      collapsedGroupPositions: Object.assign({}, state.collapsedGroupPositions)
+    };
+  }
+
+  function applyFullImportSnapshot(snap) {
+    state.suppressHistoryPush = true;
+
+    state.models = Object.assign({ dbml: '', uml: '', dfd: '' }, snap.models || {});
+    state.activeModelType = snap.activeModelType || 'dbml';
+    modelTypeButtons.forEach(b => b.classList.toggle('active', b.dataset.model === state.activeModelType));
+    cm.setOption('mode', state.activeModelType);
+
+    const positionsByType = snap.positionsByType || {};
+    ['dbml', 'uml', 'dfd'].forEach(type => {
+      const pos = positionsByType[type] || {};
+      localStorage.setItem(LS_KEYS.positions + '.' + type, JSON.stringify(pos));
+      if (type === state.activeModelType) state.positions = pos;
+    });
+
+    state.theme = snap.theme || state.theme;
+    elThemeSelect.value = state.theme;
+    localStorage.setItem(LS_KEYS.theme, state.theme);
+    applyCanvasBackground(state.theme);
+
+    state.layoutMode = snap.layoutMode || state.layoutMode;
+    layoutButtons.forEach(b => b.classList.toggle('active', b.dataset.layout === state.layoutMode));
+    localStorage.setItem(LS_KEYS.layout, state.layoutMode);
+
+    state.collapsedGroups = new Set(snap.collapsedGroups || []);
+    state.collapsedGroupPositions = Object.assign({}, snap.collapsedGroupPositions || {});
+
+    setDbml(state.models[state.activeModelType] || '');
+    persistModels();
+    renderGraph(getDbml(), { keepPositions: true });
+
+    state.history = [getDbml()];
+    state.historyIndex = 0;
+    updateUndoRedoButtons();
+    state.suppressHistoryPush = false;
+
+    refreshGenerateFromOptions();
+    setStatus('saved');
+  }
+
+  elBtnExportJson.addEventListener('click', async function () {
+    const list = getProjectsIndex();
+    const entry = state.currentProjectId ? list.find(p => p.id === state.currentProjectId) : null;
+    const defaultName = entry ? entry.name : 'Proyecto DBML Studio';
+    const name = await showModal({
+      title: 'Exportar proyecto como JSON',
+      message: 'Incluye los 3 tipos de modelo (DBML/UML/DFD), posiciones, tema y layout.',
+      withInput: true,
+      defaultValue: defaultName,
+      confirmText: 'Exportar'
+    });
+    if (name === null) return; // cancelado
+    const snap = buildFullExportSnapshot(name.trim() || defaultName);
+    const filename = safeIdent(snap.name).toLowerCase() + '.json';
+    download(filename, JSON.stringify(snap, null, 2), 'application/json');
+  });
+
+  elBtnImportJson.addEventListener('click', function () {
+    elJsonFileInput.value = '';
+    elJsonFileInput.click();
+  });
+
+  elJsonFileInput.addEventListener('change', async function () {
+    const file = elJsonFileInput.files && elJsonFileInput.files[0];
+    if (!file) return;
+
+    let snap;
+    try {
+      snap = JSON.parse(await file.text());
+    } catch (e) {
+      await showAlert('Archivo inválido', 'No se pudo leer el JSON: ' + e.message);
+      return;
+    }
+    if (!snap || typeof snap !== 'object' || !snap.models) {
+      await showAlert('Archivo inválido', 'Este archivo no parece ser un proyecto exportado de DBML Studio.');
+      return;
+    }
+
+    const currentHasContent = Object.keys(state.models).some(t => (state.models[t] || '').trim()) || getDbml().trim();
+    if (currentHasContent) {
+      const ok = await showModal({
+        title: 'Importar proyecto JSON',
+        message: 'Esto va a REEMPLAZAR el borrador actual (los 3 modelos, posiciones y tema) con "' + (snap.name || file.name) + '". ¿Continuar?',
+        confirmText: 'Importar y reemplazar'
+      });
+      if (!ok) return;
+    }
+
+    applyFullImportSnapshot(snap);
+    await showAlert('Importado', 'Proyecto "' + (snap.name || file.name) + '" importado correctamente.');
+  });
 
   /* =========================================================================
      12c. TIPOS DE MODELO (DBML / UML / DFD) Y GENERACIÓN CRUZADA
