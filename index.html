@@ -2240,4 +2240,1813 @@ P1 -> E1 : "Confirmación"
     });
 
     elColorSwatches.innerHTML = '';
-    Object.keys(groups).forEach(color =
+    Object.keys(groups).forEach(color => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'swatch-btn' + (state.activeColorFilter === color ? ' active' : '');
+      btn.style.background = color;
+      btn.title = groups[color].length + ' tabla(s) con este color — clic para seleccionarlas';
+      btn.addEventListener('click', function () {
+        if (state.activeColorFilter === color) { clearSelection(); return; }
+        clearSelection();
+        state.activeColorFilter = color;
+        groups[color].forEach(id => selectElement(id));
+        Array.from(elColorSwatches.children).forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+      });
+      elColorSwatches.appendChild(btn);
+    });
+  }
+
+  /* =========================================================================
+     7c. DUPLICAR / ELIMINAR SELECCIÓN — edita el DBML fuente directamente
+     ========================================================================= */
+  function escapeRegex(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+
+  // Ubica el bloque "Table nombre { ... }" o "Enum nombre { ... }" en el texto
+  // fuente ACTUAL (no en una copia parseada previamente), contando llaves para
+  // encontrar el cierre correcto incluso con bloques indexes{} anidados.
+  function findBlockByKeyword(sourceText, keyword, name) {
+    const re = new RegExp(keyword + '\\s+"?' + escapeRegex(name) + '"?\\s*(?:as\\s+[a-zA-Z0-9_]+)?\\s*(?:\\[[^\\]]*\\])?\\s*\\{', 'i');
+    const m = re.exec(sourceText);
+    if (!m) return null;
+    const openIdx = sourceText.indexOf('{', m.index);
+    if (openIdx === -1) return null;
+    let depth = 0, i = openIdx;
+    for (; i < sourceText.length; i++) {
+      if (sourceText[i] === '{') depth++;
+      else if (sourceText[i] === '}') { depth--; if (depth === 0) break; }
+    }
+    let end = i + 1;
+    if (sourceText[end] === '\n') end += 1;
+    return { start: m.index, end, keyword };
+  }
+
+  function findNamedBlockInSource(sourceText, name) {
+    return findBlockByKeyword(sourceText, 'Table', name) || findBlockByKeyword(sourceText, 'Enum', name) || findBlockByKeyword(sourceText, 'class', name);
+  }
+
+  // Los nodos DFD no son bloques "{ }", son una sola línea:
+  // Process|Entity|Store <id> "Etiqueta". Se ubican por su etiqueta (que es
+  // lo que usamos como "nombre" del elemento en toda la app).
+  function findDFDNodeLineInSource(sourceText, label) {
+    const lines = sourceText.split('\n');
+    const re = /^(\s*)(Process|Entity|Store)\s+([a-zA-Z0-9_]+)\s+"([^"]*)"/i;
+    for (let i = 0; i < lines.length; i++) {
+      const m = lines[i].match(re);
+      if (m && m[4] === label) return { lineIndex: i, indent: m[1], kind: m[2], id: m[3], label: m[4] };
+    }
+    return null;
+  }
+
+  function generateUniqueDFDLabel(base, sourceText) {
+    let n = 1, candidate = base + ' copy';
+    while (new RegExp('"' + escapeRegex(candidate) + '"').test(sourceText)) { n += 1; candidate = base + ' copy' + n; }
+    return candidate;
+  }
+
+  function generateUniqueDFDId(kind, sourceText) {
+    const prefix = (kind || 'N').charAt(0).toUpperCase();
+    let n = 1;
+    while (new RegExp('\\b' + prefix + n + '\\b').test(sourceText)) n += 1;
+    return prefix + n;
+  }
+
+  function generateUniqueTableName(base, sourceText) {
+    let n = 1;
+    let candidate = base + '_copy';
+    while (new RegExp('\\b(Table|Enum|class)\\s+"?' + escapeRegex(candidate) + '"?\\b').test(sourceText)) {
+      n += 1;
+      candidate = base + '_copy' + n;
+    }
+    return candidate;
+  }
+
+  // Aplica un texto DBML completo nuevo de forma inmediata (sin esperar el
+  // debounce normal de tipeo) y deja que el listener de CodeMirror también
+  // corra en segundo plano — pushHistory ya evita duplicados.
+  function applyDbmlEdit(newFullText) {
+    setDbml(newFullText);
+    persistModels();
+    pushHistory(newFullText);
+    renderGraph(newFullText);
+    setStatus('saved');
+  }
+
+  function deleteSelectedTables() {
+    const names = selectedElementsList().map(el => el.get('tableName')).filter(Boolean);
+    if (!names.length) return;
+    const modelType = state.activeModelType;
+    let text = getDbml();
+
+    if (modelType === 'dfd') {
+      const ids = [];
+      names.forEach(name => {
+        const loc = findDFDNodeLineInSource(text, name);
+        if (loc) ids.push(loc.id);
+      });
+      const nodeRe = /^\s*(Process|Entity|Store)\s+([a-zA-Z0-9_]+)\s+"([^"]*)"/i;
+      text = text.split('\n').filter(line => {
+        const nm = line.match(nodeRe);
+        if (nm && names.indexOf(nm[3]) !== -1) return false;
+        const flowM = line.trim().match(/^([a-zA-Z0-9_]+)\s*->\s*([a-zA-Z0-9_]+)/);
+        if (flowM && (ids.indexOf(flowM[1]) !== -1 || ids.indexOf(flowM[2]) !== -1)) return false;
+        return true;
+      }).join('\n');
+    } else {
+      names.forEach(name => {
+        const block = findNamedBlockInSource(text, name);
+        if (block) text = text.slice(0, block.start) + text.slice(block.end);
+      });
+      if (modelType === 'uml') {
+        text = text.split('\n').filter(line => {
+          const trimmed = line.trim();
+          if (!trimmed || /^\/\//.test(trimmed) || /^class\b/i.test(trimmed)) return true;
+          const assoc = trimmed.match(/^([a-zA-Z0-9_]+)\s*(?:"[^"]*")?\s*-->\s*(?:"[^"]*")?\s*([a-zA-Z0-9_]+)/);
+          const inherit = trimmed.match(/^([a-zA-Z0-9_]+)\s*<\|--\s*([a-zA-Z0-9_]+)/);
+          const m = assoc || inherit;
+          if (!m) return true;
+          return names.indexOf(m[1]) === -1 && names.indexOf(m[2]) === -1;
+        }).join('\n');
+      } else {
+        // limpia además cualquier línea "Ref:" que mencione alguna tabla eliminada
+        const refLineRe = /^\s*Ref\s*(?:[a-zA-Z0-9_]+)?\s*:\s*([a-zA-Z0-9_]+)\.[a-zA-Z0-9_]+\s*(?:<>|>|<|-)\s*([a-zA-Z0-9_]+)\./i;
+        text = text.split('\n').filter(line => {
+          const m = line.match(refLineRe);
+          if (!m) return true;
+          return names.indexOf(m[1]) === -1 && names.indexOf(m[2]) === -1;
+        }).join('\n');
+      }
+    }
+
+    clearSelection();
+    applyDbmlEdit(text);
+  }
+
+  // Elimina una única entidad por nombre (usada por el botón "Eliminar" del
+  // editor visual de tabla/clase/nodo): la selecciona y reutiliza la misma
+  // lógica generalizada de arriba, para no duplicar el manejo por tipo.
+  function deleteEntityByName(name) {
+    clearSelection();
+    const el = graph.getCell('tbl_' + name);
+    if (el) {
+      selectElement(el.id);
+      deleteSelectedTables();
+    }
+  }
+
+  function duplicateSelectedTables() {
+    const els = selectedElementsList().filter(el => el.get('tableName'));
+    if (!els.length) return;
+    const modelType = state.activeModelType;
+    let text = getDbml();
+    const pairs = [];
+
+    if (modelType === 'dfd') {
+      els.forEach(el => {
+        const name = el.get('tableName');
+        const loc = findDFDNodeLineInSource(text, name);
+        if (!loc) return;
+        const newLabel = generateUniqueDFDLabel(name, text);
+        const newId = generateUniqueDFDId(loc.kind, text);
+        const kindLabel = loc.kind.charAt(0).toUpperCase() + loc.kind.slice(1).toLowerCase();
+        const lines = text.split('\n');
+        lines.splice(loc.lineIndex + 1, 0, loc.indent + kindLabel + ' ' + newId + ' "' + newLabel + '"');
+        text = lines.join('\n');
+        pairs.push({ oldName: name, newName: newLabel });
+      });
+    } else {
+      els.forEach(el => {
+        const name = el.get('tableName');
+        const block = findNamedBlockInSource(text, name);
+        if (!block) return;
+        const blockText = text.slice(block.start, block.end);
+        const newName = generateUniqueTableName(name, text);
+        const renamed = blockText.replace(
+          new RegExp('^(' + block.keyword + ')(\\s+)"?' + escapeRegex(name) + '"?'),
+          '$1$2' + newName
+        );
+        text = text.slice(0, block.end) + '\n' + renamed + text.slice(block.end);
+        pairs.push({ oldName: name, newName: newName });
+      });
+    }
+    if (!pairs.length) return;
+
+    applyDbmlEdit(text);
+
+    clearSelection();
+    pairs.forEach(p => {
+      const orig = graph.getCell('tbl_' + p.oldName);
+      const copy = graph.getCell('tbl_' + p.newName);
+      if (orig && copy) {
+        const pos = orig.position();
+        copy.position(pos.x + 40, pos.y + 40);
+        selectElement(copy.id);
+      }
+    });
+    saveAllPositions();
+  }
+
+  elBtnDuplicate.addEventListener('click', duplicateSelectedTables);
+  elBtnDeleteSel.addEventListener('click', deleteSelectedTables);
+
+  const ARROW_DELTAS = { ArrowUp: [0, -1], ArrowDown: [0, 1], ArrowLeft: [-1, 0], ArrowRight: [1, 0] };
+
+  document.addEventListener('keydown', function (evt) {
+    const active = document.activeElement;
+    const tag = active ? active.tagName : '';
+    const inCodeMirror = active && active.closest && active.closest('.CodeMirror');
+    const inFormField = tag === 'INPUT' || tag === 'TEXTAREA' || !!inCodeMirror;
+    if (inFormField || !state.selected.size) return;
+
+    if (evt.key === 'Delete' || evt.key === 'Backspace') {
+      evt.preventDefault();
+      deleteSelectedTables();
+    } else if ((evt.ctrlKey || evt.metaKey) && evt.key.toLowerCase() === 'd') {
+      evt.preventDefault();
+      duplicateSelectedTables();
+    } else if (ARROW_DELTAS[evt.key]) {
+      evt.preventDefault();
+      const step = evt.shiftKey ? SNAP_GRID : 1;
+      const [dx, dy] = ARROW_DELTAS[evt.key];
+      nudgeSelection(dx * step, dy * step);
+    } else if (evt.key.toLowerCase() === 'f' && !evt.ctrlKey && !evt.metaKey) {
+      evt.preventDefault();
+      zoomToSelection();
+    }
+  });
+
+  document.addEventListener('keydown', function (evt) {
+    if (evt.key === 'Escape' && state.presentationMode) {
+      exitPresentationMode();
+      return;
+    }
+    if (evt.key.toLowerCase() === 'p' && !evt.ctrlKey && !evt.metaKey && !state.presentationMode) {
+      const active = document.activeElement;
+      const tag = active ? active.tagName : '';
+      const inCodeMirror = active && active.closest && active.closest('.CodeMirror');
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || inCodeMirror) return;
+      enterPresentationMode();
+    }
+  });
+
+  /* =========================================================================
+     7d. EDICIÓN INVERSA — doble clic en una tabla del lienzo para
+     renombrarla o editar sus campos, sincronizado con el DBML fuente
+     ========================================================================= */
+  function buildTableBlockText(name, color, fields) {
+    const settings = color ? ' [headercolor: ' + color + ']' : '';
+    const lines = fields.map(f => '  ' + f.name + ' ' + (f.type || 'varchar') + (f.pk ? ' [pk]' : ''));
+    return 'Table ' + name + settings + ' {\n' + lines.join('\n') + '\n}';
+  }
+
+  function buildEnumBlockText(name, color, values) {
+    const settings = color ? ' [headercolor: ' + color + ']' : '';
+    const lines = values.map(v => '  ' + v.name);
+    return 'Enum ' + name + settings + ' {\n' + lines.join('\n') + '\n}';
+  }
+
+  function buildUMLClassBlockText(name, color, fields) {
+    const settings = color ? ' [headercolor: ' + color + ']' : '';
+    const lines = fields.map(f => {
+      const vis = f.visibility || '+';
+      const isMethod = /\(\)$/.test(f.name);
+      return '  ' + vis + f.name + (isMethod ? (f.type ? ': ' + f.type : '') : ': ' + (f.type || 'string'));
+    });
+    return 'class ' + name + settings + ' {\n' + lines.join('\n') + '\n}';
+  }
+
+  function createFieldRow(field, isEnum, modelType) {
+    const row = document.createElement('div');
+    row.className = 'te-field-row';
+
+    const nameInput = document.createElement('input');
+    nameInput.type = 'text';
+    nameInput.className = 'te-fname';
+    nameInput.placeholder = isEnum ? 'valor' : (modelType === 'uml' ? 'nombre (o metodo())' : 'nombre_campo');
+    nameInput.value = field ? field.name : '';
+    row.appendChild(nameInput);
+
+    let typeInput = null, pkInput = null, visSelect = null;
+    if (!isEnum) {
+      typeInput = document.createElement('input');
+      typeInput.type = 'text';
+      typeInput.className = 'te-ftype';
+      typeInput.placeholder = modelType === 'uml' ? 'tipo (opcional)' : 'tipo (ej. varchar)';
+      typeInput.value = field ? field.type : '';
+      row.appendChild(typeInput);
+
+      if (modelType === 'uml') {
+        visSelect = document.createElement('select');
+        visSelect.className = 'tsel te-fvis';
+        ['+', '-', '#', '~'].forEach(v => {
+          const opt = document.createElement('option');
+          opt.value = v; opt.textContent = v;
+          if (field && field.visibility === v) opt.selected = true;
+          visSelect.appendChild(opt);
+        });
+        row.appendChild(visSelect);
+      } else {
+        pkInput = document.createElement('input');
+        pkInput.type = 'checkbox';
+        pkInput.className = 'te-fpk';
+        pkInput.title = 'Llave primaria (PK)';
+        pkInput.checked = !!(field && field.pk);
+        row.appendChild(pkInput);
+      }
+    }
+
+    const delBtn = document.createElement('button');
+    delBtn.type = 'button';
+    delBtn.className = 'te-fdel';
+    delBtn.textContent = '✕';
+    delBtn.title = 'Quitar campo';
+    delBtn.addEventListener('click', function () { row.remove(); });
+    row.appendChild(delBtn);
+
+    row.__getField = function () {
+      return {
+        name: nameInput.value.trim(),
+        type: typeInput ? typeInput.value.trim() : '',
+        pk: pkInput ? pkInput.checked : false,
+        visibility: visSelect ? visSelect.value : undefined
+      };
+    };
+    return row;
+  }
+
+  function openTableEditor(el) {
+    const name = el.get('tableName');
+    if (!name) return;
+    const tableData = (state.parsed.tables || []).find(t => t.name === name);
+    if (!tableData) return;
+    const modelType = state.activeModelType;
+
+    state.tableEditorContext = { name: name, isEnum: !!tableData.isEnum, modelType: modelType, kind: tableData.kind || null };
+    elTeName.value = name;
+    elTeFields.innerHTML = '';
+
+    if (modelType === 'dfd') {
+      elTeTitle.textContent = 'Editar nodo DFD';
+      elTeTypeBadge.textContent = (tableData.kind || '').toUpperCase();
+      elTeFieldsLabel.textContent = 'Tipo de nodo';
+      elTeAddField.classList.add('hidden');
+
+      const kindRow = document.createElement('div');
+      kindRow.className = 'te-field-row';
+      const kindSelect = document.createElement('select');
+      kindSelect.className = 'tsel';
+      kindSelect.style.flex = '1';
+      [['process', 'Process (proceso)'], ['entity', 'Entity (entidad externa)'], ['store', 'Store (almacén de datos)']].forEach(([val, label]) => {
+        const opt = document.createElement('option');
+        opt.value = val; opt.textContent = label;
+        if (val === tableData.kind) opt.selected = true;
+        kindSelect.appendChild(opt);
+      });
+      kindRow.appendChild(kindSelect);
+      elTeFields.appendChild(kindRow);
+      state.tableEditorContext.dfdKindSelect = kindSelect;
+    } else {
+      elTeAddField.classList.remove('hidden');
+      elTeTitle.textContent = tableData.isEnum ? 'Editar enum' : (modelType === 'uml' ? 'Editar clase' : 'Editar tabla');
+      elTeTypeBadge.textContent = tableData.isEnum ? 'ENUM' : (modelType === 'uml' ? 'CLASS' : 'TABLE');
+      elTeFieldsLabel.textContent = tableData.isEnum ? 'Valores' : (modelType === 'uml' ? 'Atributos / métodos' : 'Campos');
+      tableData.fields.forEach(f => elTeFields.appendChild(createFieldRow(f, tableData.isEnum, modelType)));
+      elTeAddField.textContent = tableData.isEnum ? '＋ Agregar valor' : '＋ Agregar campo';
+    }
+
+    elTeOverlay.classList.remove('hidden');
+    setTimeout(function () { elTeName.focus(); elTeName.select(); }, 30);
+  }
+
+  function hideTableEditor() {
+    elTeOverlay.classList.add('hidden');
+    state.tableEditorContext = null;
+  }
+
+  paper.on('element:pointerdblclick', function (elementView) {
+    if (elementView.model.get('type') === 'app.Group') return;
+    openTableEditor(elementView.model);
+  });
+
+  // Clic sobre el título de un marco de TableGroup expandido (headerStrip o
+  // label): colapsa. Un chip ya colapsado es clicable en cualquier parte
+  // (no tiene tablas debajo con las que se pueda interferir) para expandir.
+  paper.on('element:pointerclick', function (elementView, evt) {
+    const model = elementView.model;
+    if (model.get('type') !== 'app.Group') return;
+    const name = model.get('groupName');
+    if (!name) return;
+    if (model.get('collapsed')) {
+      toggleGroupCollapse(name);
+      return;
+    }
+    const selector = evt.target && evt.target.getAttribute && evt.target.getAttribute('joint-selector');
+    if (selector !== 'label' && selector !== 'headerStrip' && selector !== 'hint') return;
+    toggleGroupCollapse(name);
+  });
+
+  elTeAddField.addEventListener('click', function () {
+    if (!state.tableEditorContext || state.tableEditorContext.modelType === 'dfd') return;
+    const row = createFieldRow(null, state.tableEditorContext.isEnum, state.tableEditorContext.modelType);
+    elTeFields.appendChild(row);
+    row.querySelector('input').focus();
+  });
+
+  elTeCancel.addEventListener('click', hideTableEditor);
+
+  elTeDelete.addEventListener('click', function () {
+    if (!state.tableEditorContext) return;
+    const name = state.tableEditorContext.name;
+    hideTableEditor();
+    deleteEntityByName(name);
+  });
+
+  elTeSave.addEventListener('click', async function () {
+    if (!state.tableEditorContext) return;
+    const ctx = state.tableEditorContext;
+    const newName = elTeName.value.trim();
+    if (!newName) { await showAlert('Nombre requerido', 'Debes indicar un nombre.'); return; }
+
+    let text = getDbml();
+
+    // --- DFD: no es un bloque, es una sola línea "Kind id \"Etiqueta\"" ---
+    if (ctx.modelType === 'dfd') {
+      const loc = findDFDNodeLineInSource(text, ctx.name);
+      if (!loc) { hideTableEditor(); return; }
+      const newKind = ctx.dfdKindSelect ? ctx.dfdKindSelect.value : (ctx.kind || 'entity');
+      const kindLabel = newKind.charAt(0).toUpperCase() + newKind.slice(1);
+      const lines = text.split('\n');
+      lines[loc.lineIndex] = loc.indent + kindLabel + ' ' + loc.id + ' "' + newName.replace(/"/g, '') + '"';
+      text = lines.join('\n');
+      hideTableEditor();
+      applyDbmlEdit(text);
+      return;
+    }
+
+    const rows = Array.from(elTeFields.children);
+    const fields = rows.map(r => r.__getField ? r.__getField() : null).filter(f => f && f.name);
+    if (!fields.length) {
+      await showAlert('Faltan campos', ctx.isEnum ? 'Agrega al menos un valor.' : 'Agrega al menos un campo.');
+      return;
+    }
+
+    const keyword = ctx.modelType === 'uml' ? 'class' : (ctx.isEnum ? 'Enum' : 'Table');
+    const block = findBlockByKeyword(text, keyword, ctx.name);
+    if (!block) { hideTableEditor(); return; }
+
+    const originalTableData = (state.parsed.tables || []).find(t => t.name === ctx.name);
+    const color = originalTableData ? originalTableData.color : null;
+
+    const newBlockText = ctx.modelType === 'uml'
+      ? buildUMLClassBlockText(newName, color, fields)
+      : (ctx.isEnum ? buildEnumBlockText(newName, color, fields) : buildTableBlockText(newName, color, fields));
+
+    text = text.slice(0, block.start) + newBlockText + text.slice(block.end);
+
+    hideTableEditor();
+    applyDbmlEdit(text);
+  });
+
+  /* =========================================================================
+     8. ZOOM Y PANNING
+     ========================================================================= */
+  function setZoom(z, cx, cy) {
+    z = Math.max(0.2, Math.min(2.5, z));
+    const rect = elPaperContainer.getBoundingClientRect();
+    const ox = cx !== undefined ? cx - rect.left : rect.width / 2;
+    const oy = cy !== undefined ? cy - rect.top : rect.height / 2;
+    paper.scale(z, z);
+    state.zoom = z;
+    elZoomLabel.textContent = Math.round(z * 100) + '%';
+    updateMinimap();
+  }
+
+  elPaperContainer.addEventListener('wheel', function (evt) {
+    evt.preventDefault();
+    const delta = evt.deltaY < 0 ? 0.1 : -0.1;
+    setZoom(state.zoom + delta, evt.clientX, evt.clientY);
+  }, { passive: false });
+
+  // Pinch-to-zoom (dos dedos) para pantallas táctiles
+  function touchDistance(touches) {
+    const dx = touches[0].clientX - touches[1].clientX;
+    const dy = touches[0].clientY - touches[1].clientY;
+    return Math.sqrt(dx * dx + dy * dy);
+  }
+  let pinchStartDist = null, pinchStartZoom = 1;
+  elPaperContainer.addEventListener('touchstart', function (evt) {
+    if (evt.touches.length === 2) {
+      pinchStartDist = touchDistance(evt.touches);
+      pinchStartZoom = state.zoom;
+      // dos dedos = pinch, no paneo: cancela cualquier paneo/recuadro en curso
+      state.panning = false;
+      elPaperContainer.classList.remove('panning');
+    }
+  }, { passive: true });
+  elPaperContainer.addEventListener('touchmove', function (evt) {
+    if (evt.touches.length === 2 && pinchStartDist) {
+      evt.preventDefault();
+      const dist = touchDistance(evt.touches);
+      const cx = (evt.touches[0].clientX + evt.touches[1].clientX) / 2;
+      const cy = (evt.touches[0].clientY + evt.touches[1].clientY) / 2;
+      setZoom(pinchStartZoom * (dist / pinchStartDist), cx, cy);
+    }
+  }, { passive: false });
+  elPaperContainer.addEventListener('touchend', function (evt) {
+    if (evt.touches.length < 2) pinchStartDist = null;
+  });
+
+  paper.on('blank:pointerdown', function (evt) {
+    const p = getPointerXY(evt);
+    if (evt.shiftKey || state.multiSelectMode) {
+      beginRubberBand(p.x, p.y);
+      return;
+    }
+    clearSelection();
+    state.panning = true;
+    elPaperContainer.classList.add('panning');
+    const tr = paper.translate();
+    state.panStart = { x: p.x, y: p.y, tx: tr.tx, ty: tr.ty };
+  });
+
+  function handlePointerMove(evt) {
+    const p = getPointerXY(evt);
+    if (state.rubberBand) { evt.preventDefault && evt.preventDefault(); updateRubberBand(p.x, p.y); return; }
+    if (!state.panning) return;
+    evt.preventDefault && evt.preventDefault();
+    const dx = p.x - state.panStart.x;
+    const dy = p.y - state.panStart.y;
+    paper.translate(state.panStart.tx + dx, state.panStart.ty + dy);
+    updateMinimap();
+  }
+  function handlePointerUp() {
+    if (state.rubberBand) endRubberBand();
+    if (state.panning) {
+      state.panning = false;
+      elPaperContainer.classList.remove('panning');
+    }
+  }
+
+  document.addEventListener('mousemove', handlePointerMove);
+  document.addEventListener('touchmove', handlePointerMove, { passive: false });
+  document.addEventListener('mouseup', handlePointerUp);
+  document.addEventListener('touchend', handlePointerUp);
+
+  elBtnZoomIn.addEventListener('click', () => setZoom(state.zoom + 0.15));
+  elBtnZoomOut.addEventListener('click', () => setZoom(state.zoom - 0.15));
+  elBtnZoomFit.addEventListener('click', () => {
+    paper.scaleContentToFit({ padding: 40, maxScale: 1.4, minScale: 0.2 });
+    state.zoom = paper.scale().sx;
+    elZoomLabel.textContent = Math.round(state.zoom * 100) + '%';
+    updateMinimap();
+  });
+
+  /* =========================================================================
+     8d. MODO PRESENTACIÓN — pantalla completa sin editor ni herramientas,
+     pensado para mostrar el diagrama en una reunión.
+     ========================================================================= */
+  function enterPresentationMode() {
+    if (state.presentationMode) return;
+    state.presentationMode = true;
+    document.body.classList.add('presentation-mode');
+    const rootEl = document.documentElement;
+    if (rootEl.requestFullscreen) {
+      rootEl.requestFullscreen().catch(function () { /* el navegador puede bloquearlo; seguimos en modo simulado igual */ });
+    }
+    setTimeout(function () {
+      paper.setDimensions(elPaperContainer.clientWidth, elPaperContainer.clientHeight);
+      paper.scaleContentToFit({ padding: 60, maxScale: 1.6, minScale: 0.2 });
+      state.zoom = paper.scale().sx;
+      elZoomLabel.textContent = Math.round(state.zoom * 100) + '%';
+      updateMinimap();
+    }, 60);
+  }
+
+  function exitPresentationMode() {
+    if (!state.presentationMode) return;
+    state.presentationMode = false;
+    document.body.classList.remove('presentation-mode');
+    if (document.fullscreenElement) {
+      document.exitFullscreen().catch(function () {});
+    }
+    setTimeout(function () {
+      paper.setDimensions(elPaperContainer.clientWidth, elPaperContainer.clientHeight);
+      updateMinimap();
+      cm.refresh();
+    }, 60);
+  }
+
+  elBtnPresentation.addEventListener('click', enterPresentationMode);
+  elBtnExitPresentation.addEventListener('click', exitPresentationMode);
+
+  // si el usuario sale de la pantalla completa nativa (Esc del navegador,
+  // no nuestro botón), sincronizamos el estado para no quedar "a medias"
+  document.addEventListener('fullscreenchange', function () {
+    if (!document.fullscreenElement && state.presentationMode) exitPresentationMode();
+  });
+
+  function zoomToSelection() {
+    const els = selectedElementsList();
+    if (!els.length) return;
+    const bbox = selectionBBox(els);
+    const pad = 70;
+    const rect = elPaperContainer.getBoundingClientRect();
+    let scale = Math.min(
+      rect.width / (bbox.width + pad * 2),
+      rect.height / (bbox.height + pad * 2),
+      2
+    );
+    scale = Math.max(scale, 0.2);
+    paper.scale(scale, scale);
+    const tx = rect.width / 2 - (bbox.x + bbox.width / 2) * scale;
+    const ty = rect.height / 2 - (bbox.y + bbox.height / 2) * scale;
+    paper.translate(tx, ty);
+    state.zoom = scale;
+    elZoomLabel.textContent = Math.round(scale * 100) + '%';
+    updateMinimap();
+  }
+
+  elBtnZoomSel.addEventListener('click', zoomToSelection);
+
+  /* =========================================================================
+     8b. VISTAS GUARDADAS (5 slots) — guardan posición/zoom/pan del diagrama
+     Un clic  -> carga la vista guardada en ese slot (acción rápida y segura)
+     Doble clic -> guarda la vista actual en ese slot (acción deliberada,
+                   sobrescribe lo que hubiera antes)
+     ========================================================================= */
+  function getViewSnapshot() {
+    const positions = {};
+    getElements().forEach(el => {
+      const name = el.get('tableName');
+      if (name) positions[name] = el.position();
+    });
+    return {
+      translate: paper.translate(),
+      scale: paper.scale(),
+      positions,
+      collapsedGroups: Array.from(state.collapsedGroups),
+      collapsedGroupPositions: Object.assign({}, state.collapsedGroupPositions)
+    };
+  }
+
+  function flashViewButton(slot, kind) {
+    const btn = viewSlotButtons.find(b => b.dataset.slot === String(slot));
+    if (!btn) return;
+    const cls = 'flash-' + kind;
+    btn.classList.add(cls);
+    setTimeout(() => btn.classList.remove(cls), 500);
+  }
+
+  function updateViewSlotsUI() {
+    viewSlotButtons.forEach(btn => {
+      const has = !!localStorage.getItem(LS_KEYS.viewPrefix + btn.dataset.slot);
+      btn.classList.toggle('has-data', has);
+    });
+  }
+
+  function saveView(slot) {
+    const snap = getViewSnapshot();
+    localStorage.setItem(LS_KEYS.viewPrefix + slot, JSON.stringify(snap));
+    updateViewSlotsUI();
+    flashViewButton(slot, 'save');
+  }
+
+  function loadView(slot) {
+    const raw = localStorage.getItem(LS_KEYS.viewPrefix + slot);
+    if (!raw) { flashViewButton(slot, 'empty'); return; }
+    try {
+      const snap = JSON.parse(raw);
+
+      // Restaura primero qué grupos estaban colapsados/expandidos (y la
+      // posición manual de sus chips) y reconstruye el diagrama acorde a
+      // ESO antes de aplicar posiciones de tablas y cámara — si no, las
+      // posiciones guardadas no coinciden con los elementos que existen
+      // ahora mismo en el lienzo (colapsado vs expandido).
+      state.collapsedGroups = new Set(snap.collapsedGroups || []);
+      state.collapsedGroupPositions = Object.assign({}, snap.collapsedGroupPositions || {});
+      if (snap.positions) {
+        state.positions = Object.assign({}, state.positions, snap.positions);
+      }
+      renderGraph(getDbml(), { keepPositions: true });
+
+      if (snap.positions) {
+        getElements().forEach(el => {
+          const p = snap.positions[el.get('tableName')];
+          if (p) el.position(p.x, p.y);
+        });
+        localStorage.setItem(LS_KEYS.positions + '.' + state.activeModelType, JSON.stringify(state.positions));
+      }
+      if (snap.scale) {
+        paper.scale(snap.scale.sx, snap.scale.sy);
+        state.zoom = snap.scale.sx;
+        elZoomLabel.textContent = Math.round(state.zoom * 100) + '%';
+      }
+      if (snap.translate) {
+        paper.translate(snap.translate.tx, snap.translate.ty);
+      }
+      updateMinimap();
+      flashViewButton(slot, 'load');
+    } catch (e) {
+      console.error('[DBML Studio] No se pudo cargar la vista', slot, e);
+      flashViewButton(slot, 'empty');
+    }
+  }
+
+  // Distingue clic simple (cargar) de doble clic (guardar) con un pequeño
+  // margen de espera, para que un doble clic no dispare también la carga.
+  viewSlotButtons.forEach(btn => {
+    const slot = btn.dataset.slot;
+    let clickTimer = null;
+
+    btn.addEventListener('click', function () {
+      if (clickTimer) clearTimeout(clickTimer);
+      clickTimer = setTimeout(function () {
+        loadView(slot);
+        clickTimer = null;
+      }, 260);
+    });
+
+    btn.addEventListener('dblclick', function (evt) {
+      evt.preventDefault();
+      if (clickTimer) { clearTimeout(clickTimer); clickTimer = null; }
+      saveView(slot);
+    });
+  });
+
+  /* =========================================================================
+     8c. MINIMAPA — vista general del diagrama con el viewport actual
+     ========================================================================= */
+  const MM_W = 200, MM_H = 140, MM_PAD = 10;
+  const mmCtx = elMinimapCanvas.getContext('2d');
+  let mmTransform = null; // { scale, offsetX, offsetY } — mapea coords del diagrama -> coords del canvas del minimapa
+
+  function updateMinimap() {
+    if (!state.minimapVisible) return;
+    const tableEls = getElements(); // ya excluye marcos/chips de grupo
+    if (!tableEls.length) {
+      elMinimapPanel.classList.add('hidden');
+      mmTransform = null;
+      return;
+    }
+    elMinimapPanel.classList.remove('hidden');
+
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    tableEls.forEach(el => {
+      const p = el.position(), s = el.size();
+      minX = Math.min(minX, p.x); minY = Math.min(minY, p.y);
+      maxX = Math.max(maxX, p.x + s.width); maxY = Math.max(maxY, p.y + s.height);
+    });
+    const contentW = Math.max(1, maxX - minX), contentH = Math.max(1, maxY - minY);
+    const scale = Math.min((MM_W - MM_PAD * 2) / contentW, (MM_H - MM_PAD * 2) / contentH);
+    const offsetX = MM_PAD + (MM_W - MM_PAD * 2 - contentW * scale) / 2 - minX * scale;
+    const offsetY = MM_PAD + (MM_H - MM_PAD * 2 - contentH * scale) / 2 - minY * scale;
+    mmTransform = { scale, offsetX, offsetY };
+
+    mmCtx.clearRect(0, 0, MM_W, MM_H);
+    mmCtx.fillStyle = '#0f172a';
+    mmCtx.fillRect(0, 0, MM_W, MM_H);
+
+    // tablas/enums como rectángulos en miniatura con su color de cabecera
+    tableEls.forEach(el => {
+      const p = el.position(), s = el.size();
+      const color = el.attr('header/fill') || '#6366f1';
+      const isSel = state.selected.has(el.id);
+      mmCtx.fillStyle = color;
+      mmCtx.globalAlpha = isSel ? 1 : 0.75;
+      mmCtx.fillRect(p.x * scale + offsetX, p.y * scale + offsetY, Math.max(2, s.width * scale), Math.max(2, s.height * scale));
+      if (isSel) {
+        mmCtx.globalAlpha = 1;
+        mmCtx.strokeStyle = '#ffffff';
+        mmCtx.lineWidth = 1;
+        mmCtx.strokeRect(p.x * scale + offsetX, p.y * scale + offsetY, Math.max(2, s.width * scale), Math.max(2, s.height * scale));
+      }
+    });
+    mmCtx.globalAlpha = 1;
+
+    // viewport actual (área visible del lienzo principal)
+    const tr = paper.translate(), sc = paper.scale();
+    const rect = elPaperContainer.getBoundingClientRect();
+    const vx = -tr.tx / sc.sx, vy = -tr.ty / sc.sy;
+    const vw = rect.width / sc.sx, vh = rect.height / sc.sy;
+    mmCtx.strokeStyle = '#818cf8';
+    mmCtx.lineWidth = 1.5;
+    mmCtx.strokeRect(vx * scale + offsetX, vy * scale + offsetY, vw * scale, vh * scale);
+    mmCtx.fillStyle = 'rgba(129,140,248,0.12)';
+    mmCtx.fillRect(vx * scale + offsetX, vy * scale + offsetY, vw * scale, vh * scale);
+  }
+
+  function navigateMinimapTo(clientX, clientY) {
+    if (!mmTransform) return;
+    const canvasRect = elMinimapCanvas.getBoundingClientRect();
+    const cx = clientX - canvasRect.left, cy = clientY - canvasRect.top;
+    const diagramX = (cx - mmTransform.offsetX) / mmTransform.scale;
+    const diagramY = (cy - mmTransform.offsetY) / mmTransform.scale;
+    const rect = elPaperContainer.getBoundingClientRect();
+    const sc = paper.scale();
+    const tx = rect.width / 2 - diagramX * sc.sx;
+    const ty = rect.height / 2 - diagramY * sc.sy;
+    paper.translate(tx, ty);
+    updateMinimap();
+  }
+
+  function mmPointerDown(evt) {
+    state.minimapDragging = true;
+    const p = getPointerXY(evt);
+    navigateMinimapTo(p.x, p.y);
+  }
+  function mmPointerMove(evt) {
+    if (!state.minimapDragging) return;
+    evt.preventDefault && evt.preventDefault();
+    const p = getPointerXY(evt);
+    navigateMinimapTo(p.x, p.y);
+  }
+  function mmPointerUp() { state.minimapDragging = false; }
+
+  elMinimapCanvas.addEventListener('mousedown', mmPointerDown);
+  elMinimapCanvas.addEventListener('touchstart', mmPointerDown, { passive: true });
+  document.addEventListener('mousemove', mmPointerMove);
+  document.addEventListener('touchmove', mmPointerMove, { passive: false });
+  document.addEventListener('mouseup', mmPointerUp);
+  document.addEventListener('touchend', mmPointerUp);
+
+  elBtnMinimap.classList.toggle('active', state.minimapVisible);
+  elBtnMinimap.addEventListener('click', function () {
+    state.minimapVisible = !state.minimapVisible;
+    localStorage.setItem('dbmlstudio.minimap', state.minimapVisible ? '1' : '0');
+    elBtnMinimap.classList.toggle('active', state.minimapVisible);
+    if (state.minimapVisible) updateMinimap();
+    else elMinimapPanel.classList.add('hidden');
+  });
+
+  /* =========================================================================
+     9. BUSCADOR Y FILTRO
+     ========================================================================= */
+  elSearchInput.addEventListener('input', _.debounce(function () {
+    const q = elSearchInput.value.trim().toLowerCase();
+    if (!q) return;
+    const match = getElements().find(el => (el.get('tableName') || '').toLowerCase().includes(q));
+    if (!match) return;
+
+    const view = paper.findViewByModel(match);
+    if (view) {
+      view.el.classList.remove('cell-highlight');
+      void view.el.offsetWidth; // reflow para reiniciar animación
+      view.el.classList.add('cell-highlight');
+    }
+
+    // centrar la vista en el elemento
+    const bbox = match.getBBox();
+    const containerRect = elPaperContainer.getBoundingClientRect();
+    const z = state.zoom;
+    const tx = containerRect.width / 2 - (bbox.x + bbox.width / 2) * z;
+    const ty = containerRect.height / 2 - (bbox.y + bbox.height / 2) * z;
+    paper.translate(tx, ty);
+    updateMinimap();
+  }, 300));
+
+  /* =========================================================================
+     10. TEMA VISUAL
+     ========================================================================= */
+  elThemeSelect.value = state.theme;
+  function applyCanvasBackground(theme) {
+    elPaperContainer.classList.remove('theme-bg-slate', 'theme-bg-cyberpunk', 'theme-bg-minimal');
+    elPaperContainer.classList.add('theme-bg-' + theme);
+  }
+  applyCanvasBackground(state.theme);
+
+  elThemeSelect.addEventListener('change', function () {
+    state.theme = elThemeSelect.value;
+    localStorage.setItem(LS_KEYS.theme, state.theme);
+    applyCanvasBackground(state.theme);
+    renderGraph(getDbml(), { keepPositions: true });
+  });
+
+  /* =========================================================================
+     11. RENDER EN TIEMPO REAL (DEBOUNCE 500ms) + PERSISTENCIA + HISTORIAL
+     ========================================================================= */
+  function setStatus(mode) {
+    elStatusDot.className = 'status-dot ' + mode;
+    elStatusText.textContent = mode === 'saving' ? 'Guardando…' : (mode === 'error' ? 'Error al analizar' : 'Guardado');
+  }
+
+  const MAX_HISTORY = 100;
+
+  function pushHistory(text) {
+    if (state.suppressHistoryPush) return;
+    // evita duplicados consecutivos
+    if (state.history[state.historyIndex] === text) return;
+    state.history = state.history.slice(0, state.historyIndex + 1);
+    state.history.push(text);
+    if (state.history.length > MAX_HISTORY) state.history.shift();
+    state.historyIndex = state.history.length - 1;
+    updateUndoRedoButtons();
+  }
+
+  function updateUndoRedoButtons() {
+    elBtnUndo.disabled = state.historyIndex <= 0;
+    elBtnRedo.disabled = state.historyIndex >= state.history.length - 1;
+  }
+
+  cm.on('change', function () {
+    if (state.suppressHistoryPush) return; // evita re-disparar mientras deshacemos/rehacemos/cargamos
+    setStatus('saving');
+    clearTimeout(state.renderTimer);
+    clearTimeout(state.saveTimer);
+
+    state.renderTimer = setTimeout(function () {
+      try {
+        renderGraph(getDbml());
+        setStatus('saved');
+      } catch (e) {
+        console.error(e);
+        setStatus('error');
+      }
+    }, 500);
+
+    state.saveTimer = setTimeout(function () {
+      persistModels();
+      pushHistory(getDbml());
+    }, 500);
+  });
+
+  elBtnUndo.addEventListener('click', function () {
+    if (state.historyIndex <= 0) return;
+    state.historyIndex -= 1;
+    state.suppressHistoryPush = true;
+    setDbml(state.history[state.historyIndex]);
+    persistModels();
+    renderGraph(getDbml());
+    state.suppressHistoryPush = false;
+    updateUndoRedoButtons();
+  });
+
+  elBtnRedo.addEventListener('click', function () {
+    if (state.historyIndex >= state.history.length - 1) return;
+    state.historyIndex += 1;
+    state.suppressHistoryPush = true;
+    setDbml(state.history[state.historyIndex]);
+    persistModels();
+    renderGraph(getDbml());
+    state.suppressHistoryPush = false;
+    updateUndoRedoButtons();
+  });
+
+  /* =========================================================================
+     12. EXPORTACIÓN
+     ========================================================================= */
+  function download(filename, content, mime) {
+    const blob = content instanceof Blob ? content : new Blob([content], { type: mime });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+  }
+
+  function getSerializedSvg() {
+    const bbox = graph.getBBox() || { x: 0, y: 0, width: 800, height: 600 };
+    const pad = 30;
+    const clone = paper.svg.cloneNode(true);
+    clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+    clone.setAttribute('width', bbox.width + pad * 2);
+    clone.setAttribute('height', bbox.height + pad * 2);
+    clone.setAttribute('viewBox', (bbox.x - pad) + ' ' + (bbox.y - pad) + ' ' + (bbox.width + pad * 2) + ' ' + (bbox.height + pad * 2));
+    // fondo
+    const bg = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+    bg.setAttribute('x', bbox.x - pad); bg.setAttribute('y', bbox.y - pad);
+    bg.setAttribute('width', bbox.width + pad * 2); bg.setAttribute('height', bbox.height + pad * 2);
+    bg.setAttribute('fill', THEMES[state.theme].bodyFill === '#ffffff' ? '#ffffff' : '#0f172a');
+    clone.insertBefore(bg, clone.firstChild);
+    return { svgString: new XMLSerializer().serializeToString(clone), bbox, pad };
+  }
+
+  elBtnExportSvg.addEventListener('click', function () {
+    if (!graph.getElements().length) return;
+    const { svgString } = getSerializedSvg();
+    download('diagrama-er.svg', svgString, 'image/svg+xml');
+  });
+
+  elBtnExportPng.addEventListener('click', function () {
+    if (!graph.getElements().length) return;
+    const { svgString, bbox, pad } = getSerializedSvg();
+    const scaleFactor = 2; // export nítido
+    const img = new Image();
+    const svg64 = btoa(unescape(encodeURIComponent(svgString)));
+    img.onload = function () {
+      const canvas = document.createElement('canvas');
+      canvas.width = (bbox.width + pad * 2) * scaleFactor;
+      canvas.height = (bbox.height + pad * 2) * scaleFactor;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      canvas.toBlob(function (blob) { download('diagrama-er.png', blob); });
+    };
+    img.onerror = function () { showAlert('Error al exportar', 'No se pudo generar el PNG. Intenta exportar como SVG.'); };
+    img.src = 'data:image/svg+xml;base64,' + svg64;
+  });
+
+  elBtnDownloadDbml.addEventListener('click', function () {
+    download('esquema.dbml', getDbml(), 'text/plain');
+  });
+
+  /* =========================================================================
+     12b. MODELOS GUARDADOS (multi-proyecto)
+     Cada modelo guarda: el texto DBML, las posiciones de las tablas, el tema
+     y el modo de layout. El select permite ir cargando distintos modelos;
+     el borrador actual (autosave normal) sigue funcionando independiente
+     de si hay o no un modelo "abierto".
+     ========================================================================= */
+  function getProjectsIndex() {
+    try { return JSON.parse(localStorage.getItem(LS_KEYS.projectsIndex) || '[]'); }
+    catch (e) { return []; }
+  }
+
+  function setProjectsIndex(list) {
+    localStorage.setItem(LS_KEYS.projectsIndex, JSON.stringify(list));
+  }
+
+  function refreshProjectSelect() {
+    const list = getProjectsIndex().slice().sort((a, b) => a.name.localeCompare(b.name, 'es'));
+    elProjectSelect.innerHTML = '';
+    const placeholder = document.createElement('option');
+    placeholder.value = '';
+    placeholder.textContent = '— Sin guardar —';
+    elProjectSelect.appendChild(placeholder);
+    list.forEach(p => {
+      const opt = document.createElement('option');
+      opt.value = p.id;
+      opt.textContent = p.name;
+      if (p.id === state.currentProjectId) opt.selected = true;
+      elProjectSelect.appendChild(opt);
+    });
+    if (!state.currentProjectId) placeholder.selected = true;
+    elBtnProjectSave.disabled = !state.currentProjectId;
+    elBtnProjectDel.disabled = !state.currentProjectId;
+  }
+
+  function syncActiveModelIntoState() {
+    state.models[state.activeModelType] = getDbml();
+  }
+
+  function buildProjectSnapshot(name, id) {
+    syncActiveModelIntoState();
+    return {
+      id, name,
+      models: Object.assign({}, state.models),
+      activeModelType: state.activeModelType,
+      positions: state.positions,
+      theme: state.theme,
+      layoutMode: state.layoutMode,
+      updatedAt: Date.now()
+    };
+  }
+
+  function flashProjectButton(btn, text) {
+    const original = btn.textContent;
+    btn.textContent = text;
+    btn.disabled = true;
+    setTimeout(function () {
+      btn.textContent = original;
+      btn.disabled = !state.currentProjectId;
+    }, 900);
+  }
+
+  function saveCurrentProject() {
+    if (!state.currentProjectId) return;
+    const list = getProjectsIndex();
+    const entry = list.find(p => p.id === state.currentProjectId);
+    const name = entry ? entry.name : 'Modelo';
+    const snap = buildProjectSnapshot(name, state.currentProjectId);
+    localStorage.setItem(LS_KEYS.projectPrefix + state.currentProjectId, JSON.stringify(snap));
+    if (entry) entry.updatedAt = snap.updatedAt;
+    setProjectsIndex(list);
+    flashProjectButton(elBtnProjectSave, '✔');
+  }
+
+  async function createNewProject() {
+    const name = await showModal({
+      title: 'Nuevo modelo',
+      message: 'Guarda los 3 tipos de diagrama (DBML, UML y DFD) juntos, con sus posiciones, tema y layout.',
+      withInput: true,
+      defaultValue: 'Modelo sin título',
+      confirmText: 'Guardar'
+    });
+    if (!name || !name.trim()) return;
+    const id = 'p_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+    const snap = buildProjectSnapshot(name.trim(), id);
+    localStorage.setItem(LS_KEYS.projectPrefix + id, JSON.stringify(snap));
+    const list = getProjectsIndex();
+    list.push({ id, name: name.trim(), updatedAt: snap.updatedAt });
+    setProjectsIndex(list);
+    state.currentProjectId = id;
+    refreshProjectSelect();
+  }
+
+  async function deleteCurrentProject() {
+    if (!state.currentProjectId) return;
+    const list = getProjectsIndex();
+    const entry = list.find(p => p.id === state.currentProjectId);
+    const ok = await showModal({
+      title: 'Eliminar modelo',
+      message: '¿Eliminar el modelo "' + (entry ? entry.name : '') + '"? Esta acción no se puede deshacer.',
+      confirmText: 'Eliminar'
+    });
+    if (!ok) return;
+    localStorage.removeItem(LS_KEYS.projectPrefix + state.currentProjectId);
+    setProjectsIndex(list.filter(p => p.id !== state.currentProjectId));
+    state.currentProjectId = null;
+    refreshProjectSelect();
+  }
+
+  function loadProject(id) {
+    if (!id) {
+      state.currentProjectId = null;
+      refreshProjectSelect();
+      return;
+    }
+    const raw = localStorage.getItem(LS_KEYS.projectPrefix + id);
+    if (!raw) { refreshProjectSelect(); return; }
+    try {
+      const snap = JSON.parse(raw);
+      state.currentProjectId = id;
+      state.suppressHistoryPush = true;
+
+      // Compatibilidad con proyectos guardados antes de tener multi-modelo
+      // (solo tenían `dbml`, no `models`).
+      state.models = snap.models || { dbml: snap.dbml || '', uml: '', dfd: '' };
+      state.activeModelType = snap.activeModelType || 'dbml';
+      modelTypeButtons.forEach(b => b.classList.toggle('active', b.dataset.model === state.activeModelType));
+      cm.setOption('mode', state.activeModelType);
+      setDbml(state.models[state.activeModelType] || '');
+
+      state.positions = snap.positions || {};
+      localStorage.setItem(LS_KEYS.positions + '.' + state.activeModelType, JSON.stringify(state.positions));
+
+      state.theme = snap.theme || state.theme;
+      elThemeSelect.value = state.theme;
+      localStorage.setItem(LS_KEYS.theme, state.theme);
+      applyCanvasBackground(state.theme);
+
+      state.layoutMode = snap.layoutMode || state.layoutMode;
+      layoutButtons.forEach(b => b.classList.toggle('active', b.dataset.layout === state.layoutMode));
+      localStorage.setItem(LS_KEYS.layout, state.layoutMode);
+
+      persistModels();
+      renderGraph(getDbml(), { keepPositions: true });
+
+      state.history = [getDbml()];
+      state.historyIndex = 0;
+      updateUndoRedoButtons();
+      state.suppressHistoryPush = false;
+
+      refreshProjectSelect();
+      refreshGenerateFromOptions();
+      setStatus('saved');
+    } catch (e) {
+      console.error('[DBML Studio] No se pudo cargar el modelo', id, e);
+    }
+  }
+
+  elProjectSelect.addEventListener('change', function () { loadProject(elProjectSelect.value); });
+  elBtnProjectSave.addEventListener('click', saveCurrentProject);
+  elBtnProjectNew.addEventListener('click', createNewProject);
+  elBtnProjectDel.addEventListener('click', deleteCurrentProject);
+
+  /* =========================================================================
+     12b2. EXPORTAR / IMPORTAR PROYECTO COMPLETO COMO JSON
+     A diferencia de "Modelos guardados" (que vive en localStorage de este
+     navegador), esto genera un archivo real que se puede compartir con otra
+     persona o llevar a otra máquina. Incluye los 3 tipos de modelo, sus
+     posiciones (una por tipo), tema, layout y estado de colapso de grupos.
+     ========================================================================= */
+  function buildFullExportSnapshot(name) {
+    syncActiveModelIntoState();
+    const positionsByType = {};
+    ['dbml', 'uml', 'dfd'].forEach(type => {
+      if (type === state.activeModelType) {
+        positionsByType[type] = state.positions;
+      } else {
+        try { positionsByType[type] = JSON.parse(localStorage.getItem(LS_KEYS.positions + '.' + type) || '{}'); }
+        catch (e) { positionsByType[type] = {}; }
+      }
+    });
+    return {
+      formatVersion: 1,
+      app: 'DBML Studio',
+      name: name || 'Proyecto DBML Studio',
+      exportedAt: new Date().toISOString(),
+      models: Object.assign({}, state.models),
+      activeModelType: state.activeModelType,
+      positionsByType,
+      theme: state.theme,
+      layoutMode: state.layoutMode,
+      collapsedGroups: Array.from(state.collapsedGroups),
+      collapsedGroupPositions: Object.assign({}, state.collapsedGroupPositions)
+    };
+  }
+
+  function applyFullImportSnapshot(snap) {
+    state.suppressHistoryPush = true;
+
+    state.models = Object.assign({ dbml: '', uml: '', dfd: '' }, snap.models || {});
+    state.activeModelType = snap.activeModelType || 'dbml';
+    modelTypeButtons.forEach(b => b.classList.toggle('active', b.dataset.model === state.activeModelType));
+    cm.setOption('mode', state.activeModelType);
+
+    const positionsByType = snap.positionsByType || {};
+    ['dbml', 'uml', 'dfd'].forEach(type => {
+      const pos = positionsByType[type] || {};
+      localStorage.setItem(LS_KEYS.positions + '.' + type, JSON.stringify(pos));
+      if (type === state.activeModelType) state.positions = pos;
+    });
+
+    state.theme = snap.theme || state.theme;
+    elThemeSelect.value = state.theme;
+    localStorage.setItem(LS_KEYS.theme, state.theme);
+    applyCanvasBackground(state.theme);
+
+    state.layoutMode = snap.layoutMode || state.layoutMode;
+    layoutButtons.forEach(b => b.classList.toggle('active', b.dataset.layout === state.layoutMode));
+    localStorage.setItem(LS_KEYS.layout, state.layoutMode);
+
+    state.collapsedGroups = new Set(snap.collapsedGroups || []);
+    state.collapsedGroupPositions = Object.assign({}, snap.collapsedGroupPositions || {});
+
+    setDbml(state.models[state.activeModelType] || '');
+    persistModels();
+    renderGraph(getDbml(), { keepPositions: true });
+
+    state.history = [getDbml()];
+    state.historyIndex = 0;
+    updateUndoRedoButtons();
+    state.suppressHistoryPush = false;
+
+    refreshGenerateFromOptions();
+    setStatus('saved');
+  }
+
+  elBtnExportJson.addEventListener('click', async function () {
+    const list = getProjectsIndex();
+    const entry = state.currentProjectId ? list.find(p => p.id === state.currentProjectId) : null;
+    const defaultName = entry ? entry.name : 'Proyecto DBML Studio';
+    const name = await showModal({
+      title: 'Exportar proyecto como JSON',
+      message: 'Incluye los 3 tipos de modelo (DBML/UML/DFD), posiciones, tema y layout.',
+      withInput: true,
+      defaultValue: defaultName,
+      confirmText: 'Exportar'
+    });
+    if (name === null) return; // cancelado
+    const snap = buildFullExportSnapshot(name.trim() || defaultName);
+    const filename = safeIdent(snap.name).toLowerCase() + '.json';
+    download(filename, JSON.stringify(snap, null, 2), 'application/json');
+  });
+
+  elBtnImportJson.addEventListener('click', function () {
+    elJsonFileInput.value = '';
+    elJsonFileInput.click();
+  });
+
+  elJsonFileInput.addEventListener('change', async function () {
+    const file = elJsonFileInput.files && elJsonFileInput.files[0];
+    if (!file) return;
+
+    let snap;
+    try {
+      snap = JSON.parse(await file.text());
+    } catch (e) {
+      await showAlert('Archivo inválido', 'No se pudo leer el JSON: ' + e.message);
+      return;
+    }
+    if (!snap || typeof snap !== 'object' || !snap.models) {
+      await showAlert('Archivo inválido', 'Este archivo no parece ser un proyecto exportado de DBML Studio.');
+      return;
+    }
+
+    const currentHasContent = Object.keys(state.models).some(t => (state.models[t] || '').trim()) || getDbml().trim();
+    if (currentHasContent) {
+      const ok = await showModal({
+        title: 'Importar proyecto JSON',
+        message: 'Esto va a REEMPLAZAR el borrador actual (los 3 modelos, posiciones y tema) con "' + (snap.name || file.name) + '". ¿Continuar?',
+        confirmText: 'Importar y reemplazar'
+      });
+      if (!ok) return;
+    }
+
+    applyFullImportSnapshot(snap);
+    await showAlert('Importado', 'Proyecto "' + (snap.name || file.name) + '" importado correctamente.');
+  });
+
+  /* =========================================================================
+     12c. TIPOS DE MODELO (DBML / UML / DFD) Y GENERACIÓN CRUZADA
+     Cada tipo tiene su propio texto fuente (state.models). El borrador de
+     los 3 se guarda junto en localStorage; el proyecto guardado también
+     incluye los 3. "Generar desde" convierte usando una representación
+     genérica intermedia {entities, connections}, común a los tres formatos.
+     ========================================================================= */
+  function persistModels() {
+    syncActiveModelIntoState();
+    localStorage.setItem(LS_KEYS.models, JSON.stringify(state.models));
+    localStorage.setItem(LS_KEYS.activeModelType, state.activeModelType);
+  }
+
+  function switchModelType(type) {
+    if (type === state.activeModelType) return;
+    syncActiveModelIntoState();
+    state.activeModelType = type;
+
+    modelTypeButtons.forEach(b => b.classList.toggle('active', b.dataset.model === type));
+
+    // el modo de código (resaltado de sintaxis) de CodeMirror cambia según el tipo
+    cm.setOption('mode', type);
+
+    state.suppressHistoryPush = true;
+    setDbml(state.models[type] || '');
+    state.suppressHistoryPush = false;
+
+    state.positions = {}; // cada tipo de modelo tiene su propio lienzo/posiciones
+    try { state.positions = JSON.parse(localStorage.getItem(LS_KEYS.positions + '.' + type) || '{}'); } catch (e) { state.positions = {}; }
+    state.collapsedGroups = new Set();
+    clearSelection();
+
+    persistModels();
+    renderGraph(getDbml(), { keepPositions: Object.keys(state.positions).length > 0 });
+
+    state.history = [getDbml()];
+    state.historyIndex = 0;
+    updateUndoRedoButtons();
+
+    refreshGenerateFromOptions();
+    setStatus('saved');
+  }
+
+  modelTypeButtons.forEach(btn => {
+    btn.addEventListener('click', function () { switchModelType(btn.dataset.model); });
+  });
+
+  function refreshGenerateFromOptions() {
+    elGenerateFrom.innerHTML = '<option value="">⚡ Generar desde…</option>';
+    Object.keys(state.models).forEach(type => {
+      if (type === state.activeModelType) return;
+      const text = state.models[type];
+      if (!text || !text.trim()) return;
+      const opt = document.createElement('option');
+      opt.value = type;
+      opt.textContent = MODEL_LABELS[type] || type;
+      elGenerateFrom.appendChild(opt);
+    });
+  }
+
+  const MODEL_LABELS = { dbml: '📐 DBML / ER', uml: '🧩 UML', dfd: '🔀 DFD' };
+
+  /* --- Representación genérica intermedia: extraer de cualquier modelo --- */
+  function extractGeneric(type, text) {
+    const parser = type === 'uml' ? parseUML : (type === 'dfd' ? parseDFD : parseDBML);
+    const parsed = parser(text);
+    return {
+      entities: parsed.tables.map(t => ({
+        name: t.name,
+        fields: (t.fields || []).filter(f => !f.isMethod && !/\(\)$/.test(f.name)).map(f => ({ name: f.name, type: f.type || 'varchar', pk: !!f.pk }))
+      })),
+      connections: parsed.refs.map(r => ({
+        from: r.from.table, to: r.to.table,
+        fromField: r.from.field || 'id',
+        toField: r.to.field || 'id',
+        label: r.label || (r.from.field && r.to.field ? (r.from.field + ' → ' + r.to.field) : ''),
+        cardinality: r.cardinality || { source: '1', target: '1' }
+      }))
+    };
+  }
+
+  function safeIdent(name) {
+    return stripAccents(String(name || 'entidad')).replace(/[^a-zA-Z0-9_]/g, '_').replace(/^(\d)/, '_$1') || 'entidad';
+  }
+
+  function buildDBMLFromGeneric(generic) {
+    let out = '// Generado automáticamente desde otro modelo.\n';
+    out += '// Revisa los campos: se preservaron los que tenían nombre/tipo explícito;\n';
+    out += '// el resto quedó con un TODO para completar a mano.\n\n';
+    generic.entities.forEach(e => {
+      out += 'Table ' + safeIdent(e.name) + ' {\n';
+      if (e.fields.length) {
+        let hasPk = e.fields.some(f => f.pk);
+        if (!hasPk) out += '  id int [pk, increment]\n';
+        e.fields.forEach(f => {
+          out += '  ' + safeIdent(f.name) + ' ' + (f.type || 'varchar') + (f.pk ? ' [pk]' : '') + '\n';
+        });
+      } else {
+        out += '  id int [pk, increment] // TODO: agregar más campos (no se pudieron inferir del origen)\n';
+      }
+      out += '}\n\n';
+    });
+    generic.connections.forEach(c => {
+      out += 'Ref: ' + safeIdent(c.from) + '.id > ' + safeIdent(c.to) + '.id';
+      if (c.label) out += ' // ' + c.label;
+      out += '\n';
+    });
+    return out;
+  }
+
+  function buildUMLFromGeneric(generic) {
+    let out = '// Generado automáticamente desde otro modelo.\n';
+    out += '// Revisa los tipos y visibilidades; se asumió "+" (público) por defecto.\n\n';
+    generic.entities.forEach(e => {
+      out += 'class ' + safeIdent(e.name) + ' {\n';
+      if (e.fields.length) {
+        e.fields.forEach(f => out += '  +' + safeIdent(f.name) + ': ' + (f.type || 'string') + '\n');
+      } else {
+        out += '  +id: int // TODO: agregar atributos\n';
+      }
+      out += '}\n\n';
+    });
+    generic.connections.forEach(c => {
+      const card = c.cardinality || {};
+      const src = card.source || '1', tgt = card.target || 'N';
+      out += safeIdent(c.from) + ' "' + src + '" --> "' + tgt + '" ' + safeIdent(c.to) + (c.label ? ' : ' + c.label : '') + '\n';
+    });
+    return out;
+  }
+
+  function buildDFDFromGeneric(generic) {
+    let out = '// Generado automáticamente desde otro modelo.\n';
+    out += '// Las entidades se mapearon como "Store" (almacenes de datos), ya que el\n';
+    out += '// modelo de origen no define procesos ni entidades externas explícitos.\n';
+    out += '// Agrega manualmente los Process/Entity que correspondan.\n\n';
+    generic.entities.forEach(e => {
+      out += 'Store ' + safeIdent(e.name) + ' "' + e.name + '"\n';
+    });
+    out += '\n';
+    generic.connections.forEach(c => {
+      out += safeIdent(c.from) + ' -> ' + safeIdent(c.to) + (c.label ? ' : "' + c.label + '"' : '') + '\n';
+    });
+    return out;
+  }
+
+  function buildFromGeneric(targetType, generic) {
+    if (targetType === 'uml') return buildUMLFromGeneric(generic);
+    if (targetType === 'dfd') return buildDFDFromGeneric(generic);
+    return buildDBMLFromGeneric(generic);
+  }
+
+  /* =========================================================================
+     12d. EXPORTAR / IMPORTAR SQL
+     ========================================================================= */
+  function mapTypeToSQL(type) {
+    const t = String(type || '').trim().toLowerCase();
+    const map = {
+      string: 'VARCHAR(255)', str: 'VARCHAR(255)', varchar: 'VARCHAR(255)',
+      int: 'INT', integer: 'INT', number: 'INT',
+      bool: 'BOOLEAN', boolean: 'BOOLEAN',
+      text: 'TEXT', float: 'FLOAT', double: 'DOUBLE',
+      date: 'DATE', datetime: 'DATETIME', timestamp: 'DATETIME',
+      decimal: 'DECIMAL(10,2)'
+    };
+    if (map[t]) return map[t];
+    if (!type) return 'VARCHAR(255)';
+    return /[a-zA-Z]/.test(type) ? type.toUpperCase() : 'VARCHAR(255)'; // ya parece un tipo SQL válido (ej. varchar(120))
+  }
+
+  function buildSQLFromGeneric(generic) {
+    let out = '-- Generado automáticamente por DBML Studio\n\n';
+    generic.entities.forEach(e => {
+      out += 'CREATE TABLE ' + safeIdent(e.name) + ' (\n';
+      const lines = [];
+      const pkFields = [];
+      if (e.fields.length) {
+        e.fields.forEach(f => {
+          const colName = safeIdent(f.name);
+          lines.push('  ' + colName + ' ' + mapTypeToSQL(f.type) + (f.pk ? ' NOT NULL' : ''));
+          if (f.pk) pkFields.push(colName);
+        });
+      } else {
+        lines.push('  id INT NOT NULL');
+        pkFields.push('id');
+      }
+      if (pkFields.length) lines.push('  PRIMARY KEY (' + pkFields.join(', ') + ')');
+      out += lines.join(',\n') + '\n);\n\n';
+    });
+
+    generic.connections.forEach((c, i) => {
+      if (c.from === c.to) return; // evita una FK de una tabla hacia sí misma por datos ambiguos
+      const constraintName = 'fk_' + safeIdent(c.from) + '_' + safeIdent(c.to) + '_' + (i + 1);
+      out += 'ALTER TABLE ' + safeIdent(c.from) +
+        ' ADD CONSTRAINT ' + constraintName +
+        ' FOREIGN KEY (' + safeIdent(c.fromField) + ')' +
+        ' REFERENCES ' + safeIdent(c.to) + ' (' + safeIdent(c.toField) + ');\n';
+    });
+
+    return out;
+  }
+
+  // Separa por comas de nivel superior, respetando paréntesis anidados
+  // (necesario porque tipos como VARCHAR(255) o DECIMAL(10,2) contienen comas).
+  function splitTopLevelCommas(str) {
+    const parts = [];
+    let depth = 0, current = '';
+    for (let i = 0; i < str.length; i++) {
+      const ch = str[i];
+      if (ch === '(') depth++;
+      if (ch === ')') depth--;
+      if (ch === ',' && depth === 0) { parts.push(current); current = ''; }
+      else current += ch;
+    }
+    if (current.trim()) parts.push(current);
+    return parts;
+  }
+
+  function stripIdentQuotes(s) { return (s || '').trim().replace(/^[`"\[]|[`"\]]$/g, ''); }
+
+  // Parser SQL pragmático: soporta CREATE TABLE con columnas, PRIMARY KEY
+  // (inline o como línea separada) y FOREIGN KEY (inline, o vía ALTER TABLE
+  // ... ADD FOREIGN KEY). No pretende cubrir el 100% del dialecto SQL de
+  // cada motor, pero sí los patrones más comunes de un dump/export típico.
+  function parseSQL(sqlText) {
+    const entities = [];
+    const connections = [];
+    const cleaned = sqlText.replace(/--.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
+
+    const createRe = /CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?[`"\[]?(\w+)[`"\]]?\s*\(([\s\S]*?)\)\s*(?:ENGINE[^;]*)?;/gi;
+    let m;
+    while ((m = createRe.exec(cleaned)) !== null) {
+      const tableName = m[1];
+      const fields = [];
+      const tablePKs = [];
+      const inlineFKs = [];
+
+      splitTopLevelCommas(m[2]).forEach(rawPart => {
+        const part = rawPart.trim();
+        if (!part) return;
+
+        const pkMatch = part.match(/^PRIMARY\s+KEY\s*\(([^)]+)\)/i);
+        if (pkMatch) {
+          pkMatch[1].split(',').forEach(c => tablePKs.push(stripIdentQuotes(c)));
+          return;
+        }
+        const fkMatch = part.match(/^(?:CONSTRAINT\s+\w+\s+)?FOREIGN\s+KEY\s*\(([^)]+)\)\s*REFERENCES\s+[`"\[]?(\w+)[`"\]]?\s*\(([^)]+)\)/i);
+        if (fkMatch) {
+          inlineFKs.push({ field: stripIdentQuotes(fkMatch[1]), refTable: fkMatch[2], refField: stripIdentQuotes(fkMatch[3]) });
+          return;
+        }
+        if (/^(UNIQUE|KEY|INDEX|CONSTRAINT\s+\w+\s+UNIQUE)/i.test(part)) return; // índices sueltos: no se traducen
+
+        const colMatch = part.match(/^[`"\[]?(\w+)[`"\]]?\s+([a-zA-Z][a-zA-Z0-9]*(?:\([^)]*\))?)/);
+        if (colMatch) {
+          const name = colMatch[1];
+          const type = colMatch[2];
+          const isPk = /PRIMARY\s+KEY/i.test(part);
+          fields.push({ name, type, pk: isPk });
+          const colFk = part.match(/REFERENCES\s+[`"\[]?(\w+)[`"\]]?\s*\(([^)]+)\)/i);
+          if (colFk) inlineFKs.push({ field: name, refTable: colFk[1], refField: stripIdentQuotes(colFk[2]) });
+        }
+      });
+
+      tablePKs.forEach(pkName => {
+        const f = fields.find(x => x.name.toLowerCase() === pkName.toLowerCase());
+        if (f) f.pk = true;
+      });
+
+      entities.push({ name: tableName, fields });
+      inlineFKs.forEach(fk => {
+        connections.push({ from: tableName, to: fk.refTable, fromField: fk.field, toField: fk.refField });
+      });
+    }
+
+    const alterRe = /ALTER\s+TABLE\s+[`"\[]?(\w+)[`"\]]?\s+ADD\s+(?:CONSTRAINT\s+\w+\s+)?FOREIGN\s+KEY\s*\(([^)]+)\)\s*REFERENCES\s+[`"\[]?(\w+)[`"\]]?\s*\(([^)]+)\)/gi;
+    while ((m = alterRe.exec(cleaned)) !== null) {
+      connections.push({
+        from: m[1], to: m[3],
+        fromField: stripIdentQuotes(m[2]), toField: stripIdentQuotes(m[4])
+      });
+    }
+
+    return { entities, connections };
+  }
+
+  function buildDBMLFromSQLGeneric(generic) {
+    let out = '// Importado desde SQL.\n\n';
+    generic.entities.forEach(e => {
+      out += 'Table ' + safeIdent(e.name) + ' {\n';
+      if (e.fields.length) {
+        e.fields.forEach(f => {
+          out += '  ' + safeIdent(f.name) + ' ' + (f.type || 'varchar') + (f.pk ? ' [pk]' : '') + '\n';
+        });
+      } else {
+        out += '  id int [pk]\n';
+      }
+      out += '}\n\n';
+    });
+
+    const seen = new Set();
+    generic.connections.forEach(c => {
+      if (!c.from || !c.to) return;
+      const key = c.from + '.' + c.fromField + '>' + c.to + '.' + c.toField;
+      if (seen.has(key)) return; // evita duplicar una FK declarada dos veces en el SQL de origen (inline + ALTER TABLE)
+      seen.add(key);
+      out += 'Ref: ' + safeIdent(c.from) + '.' + safeIdent(c.fromField) + ' > ' + safeIdent(c.to) + '.' + safeIdent(c.toField) + '\n';
+    });
+    return out;
+  }
+
+  elBtnExportSql.addEventListener('click', function () {
+    if (!getDbml().trim()) return;
+    const generic = extractGeneric(state.activeModelType, getDbml());
+    if (!generic.entities.length) return;
+    const sql = buildSQLFromGeneric(generic);
+    download('esquema.sql', sql, 'text/plain');
+  });
+
+  elBtnImportSql.addEventListener('click', function () {
+    elSqlFileInput.value = '';
+    elSqlFileInput.click();
+  });
+
+  elSqlFileInput.addEventListener('change', async function () {
+    const file = elSqlFileInput.files && elSqlFileInput.files[0];
+    if (!file) return;
+    const text = await file.text();
+    const parsedSQL = parseSQL(text);
+
+    if (!parsedSQL.entities.length) {
+      await showAlert('No se encontraron tablas', 'No se pudo reconocer ningún "CREATE TABLE" válido en el archivo.');
+      return;
+    }
+
+    if (state.activeModelType !== 'dbml') {
+      await showAlert('Cambiando a DBML', 'La importación de SQL genera un modelo DBML/ER. Se va a cambiar a esa pestaña.');
+      switchModelType('dbml');
+    }
+
+    const currentHasContent = getDbml().trim().length > 0;
+    if (currentHasContent) {
+      const ok = await showModal({
+        title: 'Importar SQL',
+        message: 'Esto va a REEMPLAZAR el contenido actual de DBML con lo importado desde "' + file.name + '". ¿Continuar?',
+        confirmText: 'Importar y reemplazar'
+      });
+      if (!ok) return;
+    }
+
+    const dbmlText = buildDBMLFromSQLGeneric(parsedSQL);
+    state.suppressHistoryPush = true;
+    setDbml(dbmlText);
+    state.suppressHistoryPush = false;
+    persistModels();
+    renderGraph(getDbml());
+    pushHistory(getDbml());
+
+    await showAlert(
+      'Importado',
+      'Se importaron ' + parsedSQL.entities.length + ' tabla(s) y ' + parsedSQL.connections.length + ' relación(es) desde "' + file.name + '".'
+    );
+  });
+
+  elGenerateFrom.addEventListener('change', async function () {
+    const fromType = elGenerateFrom.value;
+    elGenerateFrom.value = '';
+    if (!fromType) return;
+
+    const targetType = state.activeModelType;
+    const sourceText = fromType === state.activeModelType ? getDbml() : state.models[fromType];
+    if (!sourceText || !sourceText.trim()) return;
+
+    const currentHasContent = getDbml().trim().length > 0;
+    if (currentHasContent) {
+      const ok = await showModal({
+        title: 'Generar ' + (MODEL_LABELS[targetType] || targetType),
+        message: 'Esto va a REEMPLAZAR el contenido actual de ' + (MODEL_LABELS[targetType] || targetType) +
+          ' con lo generado a partir de ' + (MODEL_LABELS[fromType] || fromType) + '. ¿Continuar?',
+        confirmText: 'Generar y reemplazar'
+      });
+      if (!ok) return;
+    }
+
+    const generic = extractGeneric(fromType, sourceText);
+    const generated = buildFromGeneric(targetType, generic);
+
+    state.suppressHistoryPush = true;
+    setDbml(generated);
+    state.suppressHistoryPush = false;
+    persistModels();
+    renderGraph(getDbml());
+    pushHistory(getDbml());
+
+    await showAlert(
+      'Listo',
+      'Se generaron ' + generic.entities.length + ' entidad(es) y ' + generic.connections.length + ' relación(es) desde ' +
+      (MODEL_LABELS[fromType] || fromType) + '. Revisa el resultado — lo que no se pudo inferir queda marcado con TODO.'
+    );
+  });
+
+  /* =========================================================================
+     13. RESIZER (PANEL ARRASTRABLE)
+     ========================================================================= */
+  (function initResizer() {
+    let dragging = false;
+    elResizer.addEventListener('mousedown', function () {
+      dragging = true;
+      elResizer.classList.add('dragging');
+      document.body.classList.add('resizing');
+    });
+    document.addEventListener('mousemove', function (evt) {
+      if (!dragging) return;
+      const appRect = elApp.getBoundingClientRect();
+      let pct = ((evt.clientX - appRect.left) / appRect.width) * 100;
+      pct = Math.max(20, Math.min(70, pct));
+      elEditorPanel.style.width = pct + '%';
+      localStorage.setItem(LS_KEYS.splitWidth, pct);
+      cm.refresh();
+    });
+    document.addEventListener('mouseup', function () {
+      if (dragging) {
+        dragging = false;
+        elResizer.classList.remove('dragging');
+        document.body.classList.remove('resizing');
+        cm.refresh();
+      }
+    });
+    const savedPct = localStorage.getItem(LS_KEYS.splitWidth);
+    if (savedPct) elEditorPanel.style.width = savedPct + '%';
+  })();
+
+  /* =========================================================================
+     13b. PESTAÑAS MÓVILES — en pantallas <768px solo se muestra un panel a
+     la vez (Editor o Diagrama); en escritorio esto no tiene efecto visual
+     porque #mobile-tabbar permanece oculto vía CSS.
+     ========================================================================= */
+  function setMobileView(view) {
+    state.mobileView = view;
+    const isEditor = view === 'editor';
+    elEditorPanel.classList.toggle('mobile-hide', !isEditor);
+    elCanvasPanel.classList.toggle('mobile-hide', isEditor);
+    elMtabEditor.classList.toggle('active', isEditor);
+    elMtabDiagram.classList.toggle('active', !isEditor);
+    if (isEditor) {
+      setTimeout(function () { cm.refresh(); }, 60);
+    } else {
+      setTimeout(function () {
+        paper.setDimensions(elPaperContainer.clientWidth, elPaperContainer.clientHeight);
+        updateMinimap();
+      }, 60);
+    }
+  }
+  elMtabEditor.addEventListener('click', function () { setMobileView('editor'); });
+  elMtabDiagram.addEventListener('click', function () { setMobileView('diagram'); });
+
+  /* =========================================================================
+     14. INICIALIZACIÓN
+     ========================================================================= */
+  (function init() {
+    try {
+      // Restaura los 3 modelos guardados (o valores por defecto para cada uno)
+      let savedModels = null;
+      try { savedModels = JSON.parse(localStorage.getItem(LS_KEYS.models) || 'null'); } catch (e) { savedModels = null; }
+      const legacyDbml = localStorage.getItem(LS_KEYS.dbml); // compatibilidad con la versión previa a multi-modelo
+      state.models = savedModels || {
+        dbml: legacyDbml !== null ? legacyDbml : DEFAULT_DBML,
+        uml: DEFAULT_UML,
+        dfd: DEFAULT_DFD
+      };
+      state.activeModelType = localStorage.getItem(LS_KEYS.activeModelType) || 'dbml';
+      modelTypeButtons.forEach(b => b.classList.toggle('active', b.dataset.model === state.activeModelType));
+      cm.setOption('mode', state.activeModelType);
+
+      try {
+        state.positions = JSON.parse(localStorage.getItem(LS_KEYS.positions + '.' + state.activeModelType) || '{}');
+      } catch (e) { state.positions = {}; }
+
+      const initialText = state.models[state.activeModelType] || '';
+      setDbml(initialText);
+
+      layoutButtons.forEach(b => b.classList.toggle('active', b.dataset.layout === state.layoutMode));
+
+      renderGraph(initialText, { keepPositions: Object.keys(state.positions).length > 0 });
+
+      state.history = [initialText];
+      state.historyIndex = 0;
+      updateUndoRedoButtons();
+
+      setStatus('saved');
+      setZoom(1);
+      updateViewSlotsUI();
+      refreshProjectSelect();
+      refreshGenerateFromOptions();
+      setMobileView(state.mobileView);
+      cm.refresh();
+
+      window.addEventListener('resize', function () {
+        cm.refresh();
+        paper.setDimensions(elPaperContainer.clientWidth, elPaperContainer.clientHeight);
+        updateMinimap();
+      });
+    } catch (e) {
+      console.error('[DBML Studio] Fallo al inicializar:', e);
+      setStatus('error');
+    }
+  })();
+
+})();
+</script>
+
+</body>
+</html>
