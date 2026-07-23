@@ -3,7 +3,6 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="google-site-verification" content="SFclS7mpQqAV7PLU9Yw5Gu83647yfGwA_92oLznZ-8s" />
 <title>DBML Studio — Editor &amp; Visualizador ER</title>
 
 <script src="https://cdn.tailwindcss.com"></script>
@@ -249,17 +248,11 @@
       placeholder="// Escribe tu esquema DBML aquí..."></textarea>
 
     <div class="flex items-center gap-2 p-2 bg-slate-800 border-t border-slate-700">
-  <button id="btn-undo" class="tbtn" title="Deshacer (hasta 100 cambios)">↶ Deshacer</button>
-  <button id="btn-redo" class="tbtn" title="Rehacer">↷ Rehacer</button>
-  <div class="flex-1"></div>
-  <button id="btn-download-dbml" class="tbtn" title="Descargar como archivo .dbml">⬇ .dbml</button>
-  <!-- Nuevo botón con link al repo -->
-  <a href="https://github.com/robrstein/database-dbml-studio" 
-     target="_blank" 
-     class="tbtn" 
-     title="Ver repositorio en GitHub">🌐 Repo</a>
-</div>
-
+      <button id="btn-undo" class="tbtn" title="Deshacer (hasta 100 cambios)">↶ Deshacer</button>
+      <button id="btn-redo" class="tbtn" title="Rehacer">↷ Rehacer</button>
+      <div class="flex-1"></div>
+      <button id="btn-download-dbml" class="tbtn" title="Descargar como archivo .dbml">⬇ .dbml</button>
+    </div>
   </div>
 
   <!-- ============ RESIZER ============ -->
@@ -316,6 +309,7 @@
 
       <button id="btn-snap" class="tbtn" title="Ajustar tablas a una cuadrícula al arrastrarlas">🧲 Snap</button>
       <button id="btn-multiselect" class="tbtn" title="Modo multi-selección: cada toque agrega/quita tablas de la selección (útil en pantallas táctiles). Con esto activo, arrastrar el fondo dibuja un recuadro de selección en vez de mover la vista.">☑ Multi</button>
+      <button id="btn-add-note" class="tbtn" title="Agregar una nota/post-it libre al lienzo (no forma parte del DBML/UML/DFD)">📝 Nota</button>
       <button id="btn-duplicate" class="tbtn" title="Duplicar selección (Ctrl+D)" disabled>⎘ Duplicar</button>
       <button id="btn-delete-selection" class="tbtn" title="Eliminar selección (Supr)" disabled>🗑 Eliminar</button>
 
@@ -405,6 +399,26 @@
   </div>
 </div>
 
+<div id="note-editor-overlay" class="fixed inset-0 bg-black/60 z-[999] hidden flex items-center justify-center" style="backdrop-filter: blur(2px);">
+  <div class="bg-slate-800 border border-slate-600 rounded-xl p-5 w-80 shadow-2xl fade-in">
+    <h3 class="text-sm font-semibold text-slate-100 mb-2">📝 Nota</h3>
+    <textarea id="note-editor-text" rows="5"
+      class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-100 outline-none focus:border-indigo-500 mb-3 resize-none"
+      placeholder="Escribe tu anotación..."></textarea>
+    <div class="flex items-center gap-2 mb-4">
+      <span class="text-[11px] text-slate-400 mr-1">Color:</span>
+      <div id="note-color-swatches" class="flex items-center gap-1.5"></div>
+    </div>
+    <div class="flex items-center justify-between gap-2 pt-2 border-t border-slate-700">
+      <button id="note-delete" class="tbtn" title="Eliminar esta nota">🗑 Eliminar</button>
+      <div class="flex gap-2">
+        <button id="note-cancel" class="tbtn">Cancelar</button>
+        <button id="note-save" class="tbtn active">Guardar</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <script>
 (function () {
   'use strict';
@@ -422,6 +436,13 @@
   const elMtabEditor     = document.getElementById('mtab-editor');
   const elMtabDiagram    = document.getElementById('mtab-diagram');
   const elBtnMultiSelect = document.getElementById('btn-multiselect');
+  const elBtnAddNote     = document.getElementById('btn-add-note');
+  const elNoteOverlay    = document.getElementById('note-editor-overlay');
+  const elNoteText       = document.getElementById('note-editor-text');
+  const elNoteColorSwatches = document.getElementById('note-color-swatches');
+  const elNoteDelete     = document.getElementById('note-delete');
+  const elNoteCancel     = document.getElementById('note-cancel');
+  const elNoteSave       = document.getElementById('note-save');
   const elProjectSelect  = document.getElementById('project-select');
   const elBtnProjectSave = document.getElementById('btn-project-save');
   const elBtnProjectNew  = document.getElementById('btn-project-new');
@@ -681,6 +702,7 @@
     projectPrefix: 'dbmlstudio.project.',
     snap: 'dbmlstudio.snap',
     models: 'dbmlstudio.models',
+    notes: 'dbmlstudio.notes',
     activeModelType: 'dbmlstudio.activeModelType'
   };
 
@@ -803,6 +825,8 @@ P1 -> E1 : "Confirmación"
     mobileView: 'diagram',   // 'editor' | 'diagram' — solo aplica visualmente en pantallas <768px
     multiSelectMode: false,  // toque = alternar selección, y arrastrar el fondo = recuadro (útil en touch)
     presentationMode: false,
+    notes: { dbml: [], uml: [], dfd: [] }, // notas libres por tipo de modelo (no forman parte del texto fuente)
+    selectedNoteId: null,
     models: { dbml: '', uml: '', dfd: '' }, // texto fuente de cada tipo de modelo
     activeModelType: 'dbml'  // 'dbml' | 'uml' | 'dfd' — cuál se muestra ahora en el editor/lienzo
   };
@@ -1232,6 +1256,70 @@ P1 -> E1 : "Confirmación"
     return { type: 'path', d: 'M 14 -6 0 0 14 6 Z', fill: '#ffffff', stroke: color, 'stroke-width': 1.5 };
   }
 
+  /* --- Notas/post-its libres: no forman parte del DBML/UML/DFD, viven aparte --- */
+  const NOTE_COLORS = ['#fde047', '#fca5a5', '#86efac', '#93c5fd', '#d8b4fe', '#fdba74'];
+
+  // Ajusta el texto a un ancho de caracteres aproximado (estimación simple,
+  // no mide el texto real, pero es suficiente para una nota de post-it).
+  function wrapNoteText(text, maxChars) {
+    const rawLines = String(text || '').split('\n');
+    const wrapped = [];
+    rawLines.forEach(paragraph => {
+      if (!paragraph) { wrapped.push(''); return; }
+      let current = '';
+      paragraph.split(' ').forEach(word => {
+        const attempt = current ? current + ' ' + word : word;
+        if (attempt.length > maxChars && current) {
+          wrapped.push(current);
+          current = word;
+        } else {
+          current = attempt;
+        }
+      });
+      wrapped.push(current);
+    });
+    return wrapped;
+  }
+
+  function buildNoteElement(note) {
+    const w = note.width || 200, h = note.height || 150;
+    const color = note.color || NOTE_COLORS[0];
+    const isSelected = state.selectedNoteId === note.id;
+    const maxChars = Math.max(8, Math.floor((w - 20) / 6.2));
+    const lines = wrapNoteText(note.text || '', maxChars).slice(0, Math.max(1, Math.floor((h - 20) / 16)));
+
+    const el = new joint.dia.Element({
+      id: 'note_' + note.id,
+      type: 'app.Note',
+      position: { x: note.x, y: note.y },
+      size: { width: w, height: h },
+      z: 3
+    });
+
+    const markup = [{ tagName: 'rect', selector: 'body' }];
+    lines.forEach((_, i) => markup.push({ tagName: 'text', selector: 'line' + i }));
+    el.markup = markup;
+
+    el.attr('body', {
+      width: w, height: h, fill: color, stroke: isSelected ? '#818cf8' : 'rgba(0,0,0,0.15)',
+      strokeWidth: isSelected ? 2.5 : 1, rx: 4, ry: 4,
+      filter: { name: 'dropShadow', args: { dx: 1, dy: 2, blur: 3, color: '#000000', opacity: 0.25 } }
+    });
+    lines.forEach((line, i) => {
+      el.attr('line' + i, {
+        text: line, x: 10, y: 20 + i * 16, fill: '#1f2937',
+        fontSize: 12, fontFamily: 'Consolas, Menlo, monospace'
+      });
+    });
+
+    el.set('noteId', note.id, { silent: true });
+    return el;
+  }
+
+  function persistNotes() {
+    localStorage.setItem(LS_KEYS.notes, JSON.stringify(state.notes));
+  }
+
   function computeRefProblems(parsed) {
     const tableMap = {};
     parsed.tables.forEach(t => { tableMap[t.name] = t; });
@@ -1319,18 +1407,20 @@ P1 -> E1 : "Confirmación"
       clearDbmlMarkers(); // las validaciones de Refs/duplicados solo aplican al modelo DBML por ahora
     }
 
-    elEmptyHint.style.display = parsed.tables.length ? 'none' : 'flex';
+    elEmptyHint.style.display = (parsed.tables.length || (state.notes[state.activeModelType] || []).length) ? 'none' : 'flex';
 
     // Congelamos el paper mientras reconstruimos el grafo para evitar que
     // JointJS intente ordenar/renderizar vistas a medio crear (async paper).
     paper.freeze();
 
     if (!parsed.tables.length) {
-      graph.resetCells([]);
+      const noteEls = (state.notes[state.activeModelType] || []).map(buildNoteElement);
+      graph.resetCells(noteEls);
       paper.unfreeze();
       state.selected.clear();
       updateSelectionUI();
       elColorSwatches.innerHTML = '';
+      updateMinimap();
       return;
     }
 
@@ -1477,6 +1567,11 @@ P1 -> E1 : "Confirmación"
       newLinks.push(link);
     });
 
+    // Notas libres del tipo de modelo activo (no vienen del texto fuente)
+    (state.notes[state.activeModelType] || []).forEach(note => {
+      newElements.push(buildNoteElement(note));
+    });
+
     // Reconstrucción atómica: evita eventos "add" intermedios que disparan
     // ordenamientos de vistas inexistentes en un paper async.
     graph.resetCells(newElements.concat(newLinks));
@@ -1502,10 +1597,15 @@ P1 -> E1 : "Confirmación"
   /* =========================================================================
      6. LAYOUTS
      ========================================================================= */
-  function getElements() { return graph.getElements().filter(el => el.get('type') !== 'app.Group'); }
+  function getElements() { return graph.getElements().filter(el => el.get('type') !== 'app.Group' && el.get('type') !== 'app.Note'); }
 
   function saveAllPositions() {
-    const positions = {};
+    // IMPORTANTE: se parte de las posiciones ya guardadas (Object.assign) en
+    // vez de un objeto vacío. Si se reemplazara por completo, cualquier
+    // arrastre mientras un TableGroup está colapsado borraría la posición
+    // recordada de sus tablas ocultas (que no están en getElements() en ese
+    // momento, al no existir como elementos en el lienzo).
+    const positions = Object.assign({}, state.positions);
     getElements().forEach(el => {
       const name = el.get('tableName');
       if (name) positions[name] = el.position();
@@ -2044,13 +2144,47 @@ P1 -> E1 : "Confirmación"
     updateSelectionUI();
   }
   elBtnClearSel.addEventListener('click', clearSelection);
+
+  function selectNote(noteId) {
+    if (state.selectedNoteId === noteId) return;
+    clearNoteSelection();
+    state.selectedNoteId = noteId;
+    const el = graph.getCell('note_' + noteId);
+    if (el) { el.attr('body/stroke', '#818cf8'); el.attr('body/strokeWidth', 2.5); }
+  }
+  function clearNoteSelection() {
+    if (!state.selectedNoteId) return;
+    const el = graph.getCell('note_' + state.selectedNoteId);
+    if (el) { el.attr('body/stroke', 'rgba(0,0,0,0.15)'); el.attr('body/strokeWidth', 1); }
+    state.selectedNoteId = null;
+  }
+  function persistNoteGeometry(noteId) {
+    const el = graph.getCell('note_' + noteId);
+    if (!el) return;
+    const list = state.notes[state.activeModelType] || [];
+    const note = list.find(n => n.id === noteId);
+    if (!note) return;
+    const pos = el.position(), size = el.size();
+    note.x = pos.x; note.y = pos.y; note.width = size.width; note.height = size.height;
+    persistNotes();
+  }
+
   document.addEventListener('keydown', function (evt) {
-    if (evt.key === 'Escape') clearSelection();
+    if (evt.key === 'Escape') { clearSelection(); clearNoteSelection(); }
   });
 
   /* --- Selección y arrastre (individual o en grupo) de tablas --- */
   paper.on('element:pointerdown', function (elementView, evt) {
     const model = elementView.model;
+
+    if (model.get('type') === 'app.Note') {
+      // Selección simple (no forma parte del sistema de multi-selección de
+      // tablas). El arrastre lo maneja JointJS solo, ya que las notas son
+      // "interactive" — solo hace falta guardar la posición al soltar.
+      clearSelection();
+      selectNote(model.get('noteId'));
+      return;
+    }
 
     if (model.get('type') === 'app.Group') {
       // El título (headerStrip/label/hint) del marco EXPANDIDO es exclusivo
@@ -2092,6 +2226,7 @@ P1 -> E1 : "Confirmación"
       return;
     }
 
+    clearNoteSelection();
     const id = model.id;
     const isModifier = evt.shiftKey || evt.ctrlKey || evt.metaKey || state.multiSelectMode;
 
@@ -2179,8 +2314,13 @@ P1 -> E1 : "Confirmación"
     });
   });
 
-  paper.on('element:pointerup', function () {
+  paper.on('element:pointerup', function (elementView) {
     state.dragGroup = null;
+    const model = elementView && elementView.model;
+    if (model && model.get('type') === 'app.Note') {
+      persistNoteGeometry(model.get('noteId'));
+      return;
+    }
     saveAllPositions();
   });
 
@@ -2402,6 +2542,15 @@ P1 -> E1 : "Confirmación"
     }
   }
 
+  function deleteSelectedNote() {
+    if (!state.selectedNoteId) return;
+    const noteId = state.selectedNoteId;
+    state.notes[state.activeModelType] = (state.notes[state.activeModelType] || []).filter(n => n.id !== noteId);
+    state.selectedNoteId = null;
+    persistNotes();
+    renderGraph(getDbml(), { keepPositions: true });
+  }
+
   function duplicateSelectedTables() {
     const els = selectedElementsList().filter(el => el.get('tableName'));
     if (!els.length) return;
@@ -2464,7 +2613,15 @@ P1 -> E1 : "Confirmación"
     const tag = active ? active.tagName : '';
     const inCodeMirror = active && active.closest && active.closest('.CodeMirror');
     const inFormField = tag === 'INPUT' || tag === 'TEXTAREA' || !!inCodeMirror;
-    if (inFormField || !state.selected.size) return;
+    if (inFormField) return;
+
+    if (state.selectedNoteId && (evt.key === 'Delete' || evt.key === 'Backspace')) {
+      evt.preventDefault();
+      deleteSelectedNote();
+      return;
+    }
+
+    if (!state.selected.size) return;
 
     if (evt.key === 'Delete' || evt.key === 'Backspace') {
       evt.preventDefault();
@@ -2632,8 +2789,10 @@ P1 -> E1 : "Confirmación"
   }
 
   paper.on('element:pointerdblclick', function (elementView) {
-    if (elementView.model.get('type') === 'app.Group') return;
-    openTableEditor(elementView.model);
+    const model = elementView.model;
+    if (model.get('type') === 'app.Group') return;
+    if (model.get('type') === 'app.Note') { openNoteEditor(model.get('noteId')); return; }
+    openTableEditor(model);
   });
 
   // Clic sobre el título de un marco de TableGroup expandido (headerStrip o
@@ -2716,6 +2875,90 @@ P1 -> E1 : "Confirmación"
   });
 
   /* =========================================================================
+     7e. NOTAS/POST-ITS LIBRES — anotaciones visuales que no forman parte del
+     texto DBML/UML/DFD; viven en state.notes (por tipo de modelo) y se
+     persisten aparte.
+     ========================================================================= */
+  let noteEditorContext = null; // { noteId }
+  let noteEditorColor = NOTE_COLORS[0];
+
+  function renderNoteColorSwatches() {
+    elNoteColorSwatches.innerHTML = '';
+    NOTE_COLORS.forEach(c => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'swatch-btn' + (c === noteEditorColor ? ' active' : '');
+      btn.style.background = c;
+      btn.addEventListener('click', function () {
+        noteEditorColor = c;
+        renderNoteColorSwatches();
+      });
+      elNoteColorSwatches.appendChild(btn);
+    });
+  }
+
+  function openNoteEditor(noteId) {
+    const list = state.notes[state.activeModelType] || [];
+    const note = list.find(n => n.id === noteId);
+    if (!note) return;
+    noteEditorContext = { noteId: noteId };
+    noteEditorColor = note.color || NOTE_COLORS[0];
+    elNoteText.value = note.text || '';
+    renderNoteColorSwatches();
+    elNoteOverlay.classList.remove('hidden');
+    setTimeout(function () { elNoteText.focus(); }, 30);
+  }
+
+  function hideNoteEditor() {
+    elNoteOverlay.classList.add('hidden');
+    noteEditorContext = null;
+  }
+
+  elNoteCancel.addEventListener('click', hideNoteEditor);
+
+  elNoteSave.addEventListener('click', function () {
+    if (!noteEditorContext) return;
+    const list = state.notes[state.activeModelType] || [];
+    const note = list.find(n => n.id === noteEditorContext.noteId);
+    if (note) {
+      note.text = elNoteText.value;
+      note.color = noteEditorColor;
+      persistNotes();
+      hideNoteEditor();
+      renderGraph(getDbml(), { keepPositions: true });
+    } else {
+      hideNoteEditor();
+    }
+  });
+
+  elNoteDelete.addEventListener('click', function () {
+    if (!noteEditorContext) return;
+    const noteId = noteEditorContext.noteId;
+    state.notes[state.activeModelType] = (state.notes[state.activeModelType] || []).filter(n => n.id !== noteId);
+    if (state.selectedNoteId === noteId) state.selectedNoteId = null;
+    persistNotes();
+    hideNoteEditor();
+    renderGraph(getDbml(), { keepPositions: true });
+  });
+
+  elBtnAddNote.addEventListener('click', function () {
+    const rect = elPaperContainer.getBoundingClientRect();
+    const tr = paper.translate(), sc = paper.scale();
+    const centerX = (rect.width / 2 - tr.tx) / sc.sx;
+    const centerY = (rect.height / 2 - tr.ty) / sc.sy;
+    const note = {
+      id: 'n' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+      text: '', x: centerX - 100, y: centerY - 75, width: 200, height: 150,
+      color: NOTE_COLORS[Math.floor(Math.random() * NOTE_COLORS.length)]
+    };
+    state.notes[state.activeModelType] = state.notes[state.activeModelType] || [];
+    state.notes[state.activeModelType].push(note);
+    persistNotes();
+    renderGraph(getDbml(), { keepPositions: true });
+    openNoteEditor(note.id);
+  });
+
+  /* =========================================================================
      8. ZOOM Y PANNING
      ========================================================================= */
   function setZoom(z, cx, cy) {
@@ -2771,6 +3014,7 @@ P1 -> E1 : "Confirmación"
       return;
     }
     clearSelection();
+    clearNoteSelection();
     state.panning = true;
     elPaperContainer.classList.add('panning');
     const tr = paper.translate();
@@ -3303,6 +3547,7 @@ P1 -> E1 : "Confirmación"
       models: Object.assign({}, state.models),
       activeModelType: state.activeModelType,
       positions: state.positions,
+      notes: Object.assign({}, state.notes),
       theme: state.theme,
       layoutMode: state.layoutMode,
       updatedAt: Date.now()
@@ -3385,6 +3630,9 @@ P1 -> E1 : "Confirmación"
       state.activeModelType = snap.activeModelType || 'dbml';
       modelTypeButtons.forEach(b => b.classList.toggle('active', b.dataset.model === state.activeModelType));
       cm.setOption('mode', state.activeModelType);
+      state.notes = Object.assign({ dbml: [], uml: [], dfd: [] }, snap.notes || {});
+      state.selectedNoteId = null;
+      persistNotes();
       setDbml(state.models[state.activeModelType] || '');
 
       state.positions = snap.positions || {};
@@ -3446,6 +3694,7 @@ P1 -> E1 : "Confirmación"
       models: Object.assign({}, state.models),
       activeModelType: state.activeModelType,
       positionsByType,
+      notes: Object.assign({}, state.notes),
       theme: state.theme,
       layoutMode: state.layoutMode,
       collapsedGroups: Array.from(state.collapsedGroups),
@@ -3467,6 +3716,10 @@ P1 -> E1 : "Confirmación"
       localStorage.setItem(LS_KEYS.positions + '.' + type, JSON.stringify(pos));
       if (type === state.activeModelType) state.positions = pos;
     });
+
+    state.notes = Object.assign({ dbml: [], uml: [], dfd: [] }, snap.notes || {});
+    state.selectedNoteId = null;
+    persistNotes();
 
     state.theme = snap.theme || state.theme;
     elThemeSelect.value = state.theme;
@@ -3576,6 +3829,7 @@ P1 -> E1 : "Confirmación"
     try { state.positions = JSON.parse(localStorage.getItem(LS_KEYS.positions + '.' + type) || '{}'); } catch (e) { state.positions = {}; }
     state.collapsedGroups = new Set();
     clearSelection();
+    state.selectedNoteId = null;
 
     persistModels();
     renderGraph(getDbml(), { keepPositions: Object.keys(state.positions).length > 0 });
@@ -4017,6 +4271,11 @@ P1 -> E1 : "Confirmación"
       state.activeModelType = localStorage.getItem(LS_KEYS.activeModelType) || 'dbml';
       modelTypeButtons.forEach(b => b.classList.toggle('active', b.dataset.model === state.activeModelType));
       cm.setOption('mode', state.activeModelType);
+
+      try {
+        const savedNotes = JSON.parse(localStorage.getItem(LS_KEYS.notes) || 'null');
+        state.notes = Object.assign({ dbml: [], uml: [], dfd: [] }, savedNotes || {});
+      } catch (e) { state.notes = { dbml: [], uml: [], dfd: [] }; }
 
       try {
         state.positions = JSON.parse(localStorage.getItem(LS_KEYS.positions + '.' + state.activeModelType) || '{}');
