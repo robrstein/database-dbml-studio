@@ -1126,8 +1126,17 @@ P1 -> E1 : "Confirmación"
     gridSize: 10,
     drawGrid: false,
     background: { color: 'transparent' },
-    interactive: function (cellView) { return cellView.model.get('type') !== 'app.Group'; },
+    interactive: function (cellView) {
+      const type = cellView.model.get('type');
+      if (type === 'app.Group') return false;
+      // Las relaciones no se editan a mano (nada de arrastrar vértices ni
+      // reconectar extremos): el router las re-calcula solo cuando las
+      // tablas conectadas se mueven.
+      if (type === 'app.Ref') return false;
+      return true;
+    },
     async: true,
+    sorting: joint.dia.Paper.sorting.EXACT, // garantiza que el 'z' de cada celda se respete en el DOM
     defaultRouter: { name: 'manhattan', args: { padding: 12, step: 12 } },
     defaultConnector: { name: 'rounded', args: { radius: 8 } },
     cellViewNamespace: joint.shapes,
