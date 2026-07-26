@@ -3,7 +3,6 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-
 <title>DBML Studio — Editor &amp; Visualizador ER</title>
 
 <script src="https://cdn.tailwindcss.com"></script>
@@ -1665,14 +1664,15 @@ P1 -> E1 : "Confirmación"
         ];
         el.attr('frame', {
           width: w, height: h, fill: 'rgba(99,102,241,0.05)',
-          stroke: '#6366f1', strokeWidth: 1.5, strokeDasharray: '6,4', rx: 12, ry: 12, cursor: 'move'
+          stroke: '#6366f1', strokeWidth: 1.5, strokeDasharray: '6,4', rx: 12, ry: 12,
+          'pointer-events': 'none' // el cuerpo del marco NUNCA captura clics: siempre pasan hacia la tabla o el fondo debajo
         });
         el.attr('headerStrip', {
-          width: w, height: labelSpace, x: 0, y: 0, fill: 'transparent', cursor: 'pointer'
+          width: w, height: labelSpace, x: 0, y: 0, fill: 'transparent', cursor: 'move'
         });
         el.attr('label', {
           text: '▾ ' + g.name, x: 12, y: 18, fill: '#a5b4fc', fontSize: 11,
-          fontWeight: '700', fontFamily: 'Consolas, Menlo, monospace', cursor: 'pointer'
+          fontWeight: '700', fontFamily: 'Consolas, Menlo, monospace', cursor: 'move'
         });
         el.set('groupName', g.name, { silent: true });
         el.set('collapsed', false, { silent: true });
@@ -1753,15 +1753,9 @@ P1 -> E1 : "Confirmación"
 
   // Selecciona todas las tablas miembro de un TableGroup (usado al hacer clic
   // sobre el cuerpo del marco, y también reutilizable desde otros lugares).
-  function selectGroupMembers(groupName, additive) {
-    const g = (state.parsed.groups || []).find(x => x.name === groupName);
-    if (!g) return [];
-    const memberIds = g.tables.map(t => 'tbl_' + t).filter(id => graph.getCell(id));
-    if (!memberIds.length) return [];
-    if (!additive) clearSelection();
-    memberIds.forEach(id => selectElement(id));
-    return memberIds;
-  }
+  // Nota: ya no existe una función para "seleccionar todas las tablas del
+  // grupo con un clic" — se quitó a propósito. Arrastrar el título del marco
+  // mueve el grupo entero; hacer clic en una tabla selecciona solo esa tabla.
 
   // Cualquier cambio de posición de una tabla recalcula los marcos de grupo
   // que la contengan (cubre arrastre individual, en grupo y layouts).
@@ -2197,40 +2191,36 @@ P1 -> E1 : "Confirmación"
     }
 
     if (model.get('type') === 'app.Group') {
-      // El título (headerStrip/label/hint) del marco EXPANDIDO es exclusivo
-      // para colapsar (se maneja en element:pointerclick); acá solo interesa
-      // el cuerpo del marco. En el chip COLAPSADO, en cambio, todo el cuerpo
-      // sirve tanto para arrastrar como (si no hubo arrastre) para expandir
-      // vía element:pointerclick.
+      // Marco EXPANDIDO: el cuerpo grande tiene pointer-events:none (no llega
+      // ni a disparar este evento), así que lo único que puede haber sido
+      // clicado es el título (headerStrip/label). Ahí, arrastrar mueve TODO
+      // el grupo junto; si no hubo arrastre, element:pointerclick lo colapsa.
+      // Marco COLAPSADO (chip): todo el cuerpo sirve para arrastrar el chip,
+      // o para expandirlo si no hubo arrastre.
       const isCollapsedChip = !!model.get('collapsed');
-      const selector = evt.target && evt.target.getAttribute && evt.target.getAttribute('joint-selector');
-      if (!isCollapsedChip && (selector === 'headerStrip' || selector === 'label' || selector === 'hint')) return;
+      const groupName = model.get('groupName');
+      if (!groupName) return;
 
       if (isCollapsedChip) {
-        const groupName = model.get('groupName');
-        if (!groupName) return;
         const p0 = getPointerXY(evt);
         state.chipDrag = { groupName, startX: p0.x, startY: p0.y, startPos: model.position() };
         return;
       }
 
-      const groupName = model.get('groupName');
-      if (!groupName) return;
-      const isModifier = evt.shiftKey || evt.ctrlKey || evt.metaKey || state.multiSelectMode;
-      const memberIds = selectGroupMembers(groupName, isModifier);
-      if (!memberIds.length) return;
-      if (isModifier) { state.groupFrameDrag = null; return; } // el modificador solo suma a la selección, no arrastra
+      const g = (state.parsed.groups || []).find(x => x.name === groupName);
+      if (!g) return;
+      const startPositions = {};
+      g.tables.forEach(t => {
+        const el = graph.getCell('tbl_' + t);
+        if (el) startPositions['tbl_' + t] = el.position();
+      });
+      if (!Object.keys(startPositions).length) return;
 
       // Arrastre de todo el grupo: como el marco no es "interactive", se
       // registra la posición inicial de cada miembro y el punto de partida
-      // del puntero, y el movimiento se seguirá con listeners globales de
+      // del puntero, y el movimiento se sigue con listeners globales de
       // documento (más robusto que depender de pointermove de JointJS sobre
       // un elemento no-interactivo, y funciona igual con mouse o touch).
-      const startPositions = {};
-      memberIds.forEach(id => {
-        const el = graph.getCell(id);
-        if (el) startPositions[id] = el.position();
-      });
       const p0 = getPointerXY(evt);
       state.groupFrameDrag = { startX: p0.x, startY: p0.y, startPositions };
       return;
