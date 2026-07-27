@@ -331,6 +331,8 @@
       <button id="btn-export-sql" class="tbtn" title="Exportar como SQL (CREATE TABLE + FOREIGN KEY)">⬇ SQL</button>
       <button id="btn-import-sql" class="tbtn" title="Importar un archivo .sql y convertirlo a DBML">⬆ SQL</button>
       <input id="sql-file-input" type="file" accept=".sql,.txt" class="hidden" />
+      <button id="btn-import-schema-json" class="tbtn" title="Importar un archivo .json de esquema (tablas/columnas/foreign_keys) y convertirlo a DBML">⬆ JSON</button>
+      <input id="schema-json-file-input" type="file" accept=".json" class="hidden" />
 
       <div class="flex-1"></div>
 
@@ -494,6 +496,8 @@
   const elBtnExportSql   = document.getElementById('btn-export-sql');
   const elBtnImportSql   = document.getElementById('btn-import-sql');
   const elSqlFileInput   = document.getElementById('sql-file-input');
+  const elBtnImportSchemaJson = document.getElementById('btn-import-schema-json');
+  const elSchemaJsonFileInput = document.getElementById('schema-json-file-input');
   const elBtnZoomIn      = document.getElementById('btn-zoom-in');
   const elBtnZoomOut     = document.getElementById('btn-zoom-out');
   const elBtnZoomFit     = document.getElementById('btn-zoom-fit');
@@ -4196,6 +4200,138 @@ P1 -> E1 : "Confirmación"
       'Listo',
       'Se generaron ' + generic.entities.length + ' entidad(es) y ' + generic.connections.length + ' relación(es) desde ' +
       (MODEL_LABELS[fromType] || fromType) + '. Revisa el resultado — lo que no se pudo inferir queda marcado con TODO.'
+    );
+  });
+
+  /* =========================================================================
+     12e. IMPORTAR ESQUEMA JSON (formato tablas/columnas genérico)
+     Espera un arreglo de objetos [{ name, columns:[{name,type,length,nullable}],
+     primary_key:[...]|null, foreign_keys:[{column,ref_table,ref_column}]|null }].
+     Los elementos sin "columns" (p. ej. un marcador de sección {"name":"TABLAS"})
+     se ignoran.
+     ========================================================================= */
+  function mapSchemaJSONType(col) {
+    const t = String(col.type || '').trim().toUpperCase();
+    const len = col.length;
+    if (t === 'VARCHAR2' || t === 'VARCHAR' || t === 'CHAR' || t === 'NVARCHAR2' || t === 'NCHAR') {
+      return 'varchar' + (len ? '(' + len + ')' : '');
+    }
+    if (t === 'NUMBER') return 'int'; // el JSON no distingue precisión/escala real, solo un "length" de almacenamiento
+    if (t === 'DATE') return 'datetime';
+    if (t.indexOf('TIMESTAMP') === 0) return 'timestamp';
+    if (t === 'CLOB' || t === 'NCLOB' || t === 'LONG') return 'text';
+    if (t === 'BLOB' || t === 'RAW') return 'binary';
+    if (t === 'FLOAT' || t === 'BINARY_FLOAT' || t === 'BINARY_DOUBLE') return 'float';
+    return t ? t.toLowerCase() : 'varchar';
+  }
+
+  function parseSchemaJSON(jsonText) {
+    const entities = [];
+    const connections = [];
+    let data;
+    try {
+      data = JSON.parse(jsonText);
+    } catch (e) {
+      return { entities, connections, error: e.message };
+    }
+    if (!Array.isArray(data)) {
+      return { entities, connections, error: 'La raíz del JSON debe ser un arreglo de tablas.' };
+    }
+
+    data.forEach(item => {
+      if (!item || !Array.isArray(item.columns)) return; // ignora marcadores sin columnas
+      const pkNames = new Set((item.primary_key || []).map(n => String(n).toUpperCase()));
+      const fields = item.columns.map(c => ({
+        name: c.name,
+        type: mapSchemaJSONType(c),
+        pk: pkNames.has(String(c.name).toUpperCase()),
+        nullable: c.nullable !== false
+      }));
+      entities.push({ name: item.name, fields });
+
+      (item.foreign_keys || []).forEach(fk => {
+        if (!fk.column || !fk.ref_table) return;
+        connections.push({ from: item.name, to: fk.ref_table, fromField: fk.column, toField: fk.ref_column || fk.column });
+      });
+    });
+
+    return { entities, connections };
+  }
+
+  function buildDBMLFromSchemaJSONGeneric(generic) {
+    let out = '// Importado desde esquema JSON (tablas/columnas/foreign_keys).\n\n';
+    generic.entities.forEach(e => {
+      out += 'Table ' + safeIdent(e.name) + ' {\n';
+      if (e.fields.length) {
+        e.fields.forEach(f => {
+          const attrs = [];
+          if (f.pk) attrs.push('pk');
+          if (f.nullable === false && !f.pk) attrs.push('not null');
+          out += '  ' + safeIdent(f.name) + ' ' + (f.type || 'varchar') + (attrs.length ? ' [' + attrs.join(', ') + ']' : '') + '\n';
+        });
+      } else {
+        out += '  id int [pk]\n';
+      }
+      out += '}\n\n';
+    });
+
+    const seen = new Set();
+    generic.connections.forEach(c => {
+      if (!c.from || !c.to) return;
+      const key = c.from + '.' + c.fromField + '>' + c.to + '.' + c.toField;
+      if (seen.has(key)) return;
+      seen.add(key);
+      out += 'Ref: ' + safeIdent(c.from) + '.' + safeIdent(c.fromField) + ' > ' + safeIdent(c.to) + '.' + safeIdent(c.toField) + '\n';
+    });
+    return out;
+  }
+
+  elBtnImportSchemaJson.addEventListener('click', function () {
+    elSchemaJsonFileInput.value = '';
+    elSchemaJsonFileInput.click();
+  });
+
+  elSchemaJsonFileInput.addEventListener('change', async function () {
+    const file = elSchemaJsonFileInput.files && elSchemaJsonFileInput.files[0];
+    if (!file) return;
+    const text = await file.text();
+    const parsedSchema = parseSchemaJSON(text);
+
+    if (parsedSchema.error) {
+      await showAlert('JSON inválido', 'No se pudo interpretar el archivo: ' + parsedSchema.error);
+      return;
+    }
+    if (!parsedSchema.entities.length) {
+      await showAlert('No se encontraron tablas', 'El JSON debe ser un arreglo de objetos con "name" y "columns" (formato de esquema soportado).');
+      return;
+    }
+
+    if (state.activeModelType !== 'dbml') {
+      await showAlert('Cambiando a DBML', 'La importación de esquema JSON genera un modelo DBML/ER. Se va a cambiar a esa pestaña.');
+      switchModelType('dbml');
+    }
+
+    const currentHasContent = getDbml().trim().length > 0;
+    if (currentHasContent) {
+      const ok = await showModal({
+        title: 'Importar esquema JSON',
+        message: 'Esto va a REEMPLAZAR el contenido actual de DBML con lo importado desde "' + file.name + '". ¿Continuar?',
+        confirmText: 'Importar y reemplazar'
+      });
+      if (!ok) return;
+    }
+
+    const dbmlText = buildDBMLFromSchemaJSONGeneric(parsedSchema);
+    state.suppressHistoryPush = true;
+    setDbml(dbmlText);
+    state.suppressHistoryPush = false;
+    persistModels();
+    renderGraph(getDbml());
+    pushHistory(getDbml());
+
+    await showAlert(
+      'Importado',
+      'Se importaron ' + parsedSchema.entities.length + ' tabla(s) y ' + parsedSchema.connections.length + ' relación(es) desde "' + file.name + '".'
     );
   });
 
