@@ -89,6 +89,10 @@
   .cm-s-dbml-dark .cm-variable { color: #e2e8f0; }
   .cm-dbml-error-line { background: rgba(239,68,68,0.14) !important; }
   .cm-dbml-error-marker { color: #ef4444; font-size: 13px; padding-left: 4px; cursor: default; }
+  .cm-dbml-nav-line { background: rgba(99,102,241,0.22) !important; }
+  .cm-dbml-nav-marker { color: #818cf8; font-size: 13px; padding-left: 4px; cursor: default; }
+  @keyframes cm-nav-blink { 0%,100%{ background: rgba(99,102,241,0.22); } 40%{ background: rgba(99,102,241,0.5); } }
+  .cm-dbml-nav-blink { animation: cm-nav-blink 0.55s ease-in-out 4 !important; }
 
   /* ---------- Modo presentación ---------- */
   #presentation-exit-bar { display: none; z-index: 200; }
@@ -310,6 +314,7 @@
       <button id="btn-snap" class="tbtn" title="Ajustar tablas a una cuadrícula al arrastrarlas">🧲 Snap</button>
       <button id="btn-multiselect" class="tbtn" title="Modo multi-selección: cada toque agrega/quita tablas de la selección (útil en pantallas táctiles). Con esto activo, arrastrar el fondo dibuja un recuadro de selección en vez de mover la vista.">☑ Multi</button>
       <button id="btn-add-note" class="tbtn" title="Agregar una nota/post-it libre al lienzo (no forma parte del DBML/UML/DFD)">📝 Nota</button>
+      <button id="btn-hover-highlight" class="tbtn active" title="Activar/desactivar resaltado de relaciones al pasar el mouse sobre una tabla">🔆 Hover</button>
       <button id="btn-duplicate" class="tbtn" title="Duplicar selección (Ctrl+D)" disabled>⎘ Duplicar</button>
       <button id="btn-delete-selection" class="tbtn" title="Eliminar selección (Supr)" disabled>🗑 Eliminar</button>
 
@@ -437,6 +442,7 @@
   const elMtabDiagram    = document.getElementById('mtab-diagram');
   const elBtnMultiSelect = document.getElementById('btn-multiselect');
   const elBtnAddNote     = document.getElementById('btn-add-note');
+  const elBtnHoverHighlight = document.getElementById('btn-hover-highlight');
   const elNoteOverlay    = document.getElementById('note-editor-overlay');
   const elNoteText       = document.getElementById('note-editor-text');
   const elNoteColorSwatches = document.getElementById('note-color-swatches');
@@ -671,8 +677,12 @@
     const total = cm.lineCount();
     for (let i = 0; i < total; i++) {
       cm.removeLineClass(i, 'background', 'cm-dbml-error-line');
+      // Solo quita el marcador si es de error (⚠), no el de navegación (▶)
+      const existing = cm.lineInfo(i) && cm.lineInfo(i).gutterMarkers && cm.lineInfo(i).gutterMarkers['dbml-error-gutter'];
+      if (existing && existing.className === 'cm-dbml-error-marker') {
+        cm.setGutterMarker(i, 'dbml-error-gutter', null);
+      }
     }
-    cm.clearGutter('dbml-error-gutter');
   }
 
   function markDbmlErrors(problems) {
@@ -687,6 +697,85 @@
       cm.setGutterMarker(p.line, 'dbml-error-gutter', marker);
     });
   }
+
+  // Navega el editor al bloque de la tabla/clase/nodo/enum con ese nombre,
+  // añade una marca índigo en el gutter, y hace parpadear el fondo de esas
+  // líneas para que el ojo las encuentre de inmediato.
+  let navClearTimer = null;
+  function navigateEditorToEntity(name) {
+    if (!name) return;
+    const text = getDbml();
+    const lines = text.split('\n');
+
+    // Busca la primera línea que declara la entidad (Table/class/Enum/Process/Entity/Store)
+    const startRe = new RegExp('^\\s*(Table|class|Enum|Process|Entity|Store)\\s+"?' + name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '"?\\b', 'i');
+    const startLine = lines.findIndex(l => startRe.test(l));
+    if (startLine < 0) return;
+
+    // Encuentra el bloque completo (hasta la llave de cierre o fin de bloque)
+    let endLine = startLine;
+    let depth = 0;
+    for (let i = startLine; i < lines.length; i++) {
+      for (const ch of lines[i]) {
+        if (ch === '{') depth++;
+        else if (ch === '}') depth--;
+      }
+      endLine = i;
+      if (depth > 0 && i > startLine && depth === 0) break;
+      if (depth === 0 && i > startLine) break;
+    }
+    // Si no hay llaves (nodo DFD de una sola línea), endLine = startLine
+    if (endLine < startLine) endLine = startLine;
+
+    // Quitar marcas anteriores
+    if (navClearTimer) { clearTimeout(navClearTimer); navClearTimer = null; }
+    const total = cm.lineCount();
+    for (let i = 0; i < total; i++) {
+      cm.removeLineClass(i, 'background', 'cm-dbml-nav-line');
+      cm.removeLineClass(i, 'background', 'cm-dbml-nav-blink');
+      cm.setGutterMarker(i, 'dbml-error-gutter', null);
+    }
+
+    // Desplaza el editor para centrar el bloque en la vista
+    cm.scrollIntoView({ from: { line: startLine, ch: 0 }, to: { line: endLine, ch: 0 } }, 80);
+    cm.setCursor({ line: startLine, ch: 0 });
+
+    // Resalta todas las líneas del bloque con parpadeo inicial
+    for (let i = startLine; i <= endLine; i++) {
+      cm.addLineClass(i, 'background', 'cm-dbml-nav-blink');
+      // Marca índigo en el gutter de la primera línea (visible en el scrollbar de CodeMirror)
+      if (i === startLine) {
+        const marker = document.createElement('span');
+        marker.className = 'cm-dbml-nav-marker';
+        marker.textContent = '▶';
+        marker.title = name;
+        cm.setGutterMarker(i, 'dbml-error-gutter', marker);
+      }
+    }
+
+    // Después del parpadeo, queda el fondo suave permanente hasta que se navegue a otro
+    navClearTimer = setTimeout(function () {
+      for (let i = startLine; i <= endLine; i++) {
+        cm.removeLineClass(i, 'background', 'cm-dbml-nav-blink');
+        cm.addLineClass(i, 'background', 'cm-dbml-nav-line');
+      }
+      navClearTimer = null;
+    }, 2400);
+  }
+
+  function clearEditorNavigation() {
+    if (navClearTimer) { clearTimeout(navClearTimer); navClearTimer = null; }
+    const total = cm.lineCount();
+    for (let i = 0; i < total; i++) {
+      cm.removeLineClass(i, 'background', 'cm-dbml-nav-line');
+      cm.removeLineClass(i, 'background', 'cm-dbml-nav-blink');
+      if (cm.getGutterMarker && cm.getGutterMarker(i, 'dbml-error-gutter') &&
+          cm.getGutterMarker(i, 'dbml-error-gutter').className === 'cm-dbml-nav-marker') {
+        cm.setGutterMarker(i, 'dbml-error-gutter', null);
+      }
+    }
+  }
+
 
   /* =========================================================================
      1. CONFIGURACIÓN / CLAVES DE PERSISTENCIA
@@ -827,6 +916,7 @@ P1 -> E1 : "Confirmación"
     presentationMode: false,
     notes: { dbml: [], uml: [], dfd: [] }, // notas libres por tipo de modelo (no forman parte del texto fuente)
     selectedNoteId: null,
+    hoverEnabled: localStorage.getItem('dbmlstudio.hover') !== '0',
     models: { dbml: '', uml: '', dfd: '' }, // texto fuente de cada tipo de modelo
     activeModelType: 'dbml'  // 'dbml' | 'uml' | 'dfd' — cuál se muestra ahora en el editor/lienzo
   };
@@ -2148,6 +2238,113 @@ P1 -> E1 : "Confirmación"
     el.attr('body/stroke', th.stroke);
     el.attr('body/strokeWidth', th.strokeWidth);
   }
+
+  // Devuelve los ids de las tablas directamente relacionadas con una tabla
+  function getRelatedTableIds(tableName) {
+    const related = new Set();
+    (state.parsed.refs || []).forEach(ref => {
+      if (ref.from.table === tableName && ref.to.table !== tableName) related.add('tbl_' + ref.to.table);
+      if (ref.to.table === tableName && ref.from.table !== tableName) related.add('tbl_' + ref.from.table);
+    });
+    return related;
+  }
+
+  // Devuelve los ids de las relaciones (links) que tocan a una tabla
+  function getRelatedLinkIds(tableName) {
+    const elId = 'tbl_' + tableName;
+    return graph.getLinks().filter(link => {
+      const src = link.get('source'), tgt = link.get('target');
+      return (src && src.id === elId) || (tgt && tgt.id === elId);
+    }).map(l => l.id);
+  }
+
+  // Estado de hover: qué tabla está "iluminada" en este momento (no la seleccionada)
+  const hoverState = { tableName: null };
+
+  function applyHoverHighlight(tableName) {
+    if (hoverState.tableName === tableName) return;
+    clearHoverHighlight();
+    if (!tableName) return;
+    hoverState.tableName = tableName;
+    const th = THEMES[state.theme];
+
+    // La tabla bajo el cursor: borde blanco brillante
+    const mainEl = graph.getCell('tbl_' + tableName);
+    if (mainEl && !state.selected.has(mainEl.id)) {
+      mainEl.attr('body/stroke', '#ffffff');
+      mainEl.attr('body/strokeWidth', 2.5);
+    }
+
+    // Tablas vecinas: borde más suave color link
+    getRelatedTableIds(tableName).forEach(id => {
+      if (state.selected.has(id)) return;
+      const el = graph.getCell(id);
+      if (el) { el.attr('body/stroke', THEMES[state.theme].linkColor); el.attr('body/strokeWidth', 2); }
+    });
+
+    // Relaciones tocadas: más gruesas y opacas
+    getRelatedLinkIds(tableName).forEach(id => {
+      const link = graph.getCell(id);
+      if (link) { link.attr('line/strokeWidth', 3.5); }
+    });
+
+    // Tablas NO relacionadas: atenuar ligeramente
+    getElements().forEach(el => {
+      const name = el.get('tableName');
+      if (!name || name === tableName) return;
+      if (getRelatedTableIds(tableName).has(el.id)) return;
+      if (state.selected.has(el.id)) return;
+      el.attr('body/opacity', 0.35);
+      el.attr('headerText/opacity', 0.35);
+    });
+  }
+
+  function clearHoverHighlight() {
+    if (!hoverState.tableName) return;
+    const th = THEMES[state.theme];
+    const prevName = hoverState.tableName;
+    hoverState.tableName = null;
+
+    getElements().forEach(el => {
+      el.attr('body/opacity', 1);
+      el.attr('headerText/opacity', 1);
+      if (!state.selected.has(el.id)) {
+        el.attr('body/stroke', th.stroke);
+        el.attr('body/strokeWidth', th.strokeWidth);
+      } else {
+        highlightElement(el.id);
+      }
+    });
+    // Restaurar grosor de todos los links
+    graph.getLinks().forEach(link => {
+      link.attr('line/strokeWidth', 2.25);
+    });
+  }
+
+  paper.on('element:mouseenter', function (elementView) {
+    if (!state.hoverEnabled) return;
+    const model = elementView.model;
+    if (model.get('type') !== 'app.Table') return;
+    applyHoverHighlight(model.get('tableName'));
+  });
+  paper.on('element:mouseleave', function (elementView) {
+    if (!state.hoverEnabled) return;
+    if (elementView.model.get('type') !== 'app.Table') return;
+    clearHoverHighlight();
+  });
+  paper.on('blank:mouseenter', function () {
+    if (!state.hoverEnabled) return;
+    clearHoverHighlight();
+  });
+
+  elBtnHoverHighlight.classList.toggle('active', state.hoverEnabled);
+  elBtnHoverHighlight.addEventListener('click', function () {
+    state.hoverEnabled = !state.hoverEnabled;
+    localStorage.setItem('dbmlstudio.hover', state.hoverEnabled ? '1' : '0');
+    elBtnHoverHighlight.classList.toggle('active', state.hoverEnabled);
+    if (!state.hoverEnabled) clearHoverHighlight();
+  });
+
   function updateSelectionUI() {
     if (state.selected.size > 0) {
       elBtnClearSel.classList.remove('hidden');
@@ -2164,6 +2361,15 @@ P1 -> E1 : "Confirmación"
     state.selected.add(id);
     highlightElement(id);
     updateSelectionUI();
+    // Navega el editor al bloque de la tabla recién seleccionada
+    // (solo si es la primera tabla seleccionada o la única, para no saltar
+    // de un lado a otro cuando se seleccionan muchas a la vez con rubber-band)
+    if (state.selected.size === 1) {
+      const el = graph.getCell(id);
+      if (el && el.get('tableName')) {
+        navigateEditorToEntity(el.get('tableName'));
+      }
+    }
   }
   function deselectElement(id) {
     if (!state.selected.has(id)) return;
@@ -2180,6 +2386,7 @@ P1 -> E1 : "Confirmación"
     state.activeColorFilter = null;
     Array.from(elColorSwatches.children).forEach(b => b.classList.remove('active'));
     updateSelectionUI();
+    clearEditorNavigation();
   }
   elBtnClearSel.addEventListener('click', clearSelection);
 
@@ -2261,6 +2468,7 @@ P1 -> E1 : "Confirmación"
     }
 
     clearNoteSelection();
+    clearHoverHighlight();
     const id = model.id;
     const isModifier = evt.shiftKey || evt.ctrlKey || evt.metaKey || state.multiSelectMode;
 
@@ -2671,6 +2879,20 @@ P1 -> E1 : "Confirmación"
     } else if (evt.key.toLowerCase() === 'f' && !evt.ctrlKey && !evt.metaKey) {
       evt.preventDefault();
       zoomToSelection();
+    } else if (evt.altKey && evt.key.toLowerCase() === 'r') {
+      // Alt+R: selecciona todas las tablas directamente relacionadas con la selección actual
+      evt.preventDefault();
+      const newIds = new Set();
+      state.selected.forEach(id => {
+        const el = graph.getCell(id);
+        if (!el) return;
+        const name = el.get('tableName');
+        if (!name) return;
+        getRelatedTableIds(name).forEach(relId => {
+          if (!state.selected.has(relId) && graph.getCell(relId)) newIds.add(relId);
+        });
+      });
+      newIds.forEach(id => selectElement(id));
     }
   });
 
