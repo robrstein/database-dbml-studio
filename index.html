@@ -1227,7 +1227,19 @@ P1 -> E1 : "Confirmación"
     },
     async: true,
     sorting: joint.dia.Paper.sorting.EXACT, // garantiza que el 'z' de cada celda se respete en el DOM
-    defaultRouter: { name: 'manhattan', args: { padding: 12, step: 12 } },
+    defaultRouter: {
+      name: 'manhattan',
+      args: {
+        padding: 16, step: 12,
+        startDirections: ['left', 'right'],
+        endDirections: ['left', 'right']
+      }
+    },
+    defaultConnectionPoint: {
+      name: 'boundary',
+      args: { selector: 'body', extrapolate: false }
+    },
+    defaultAnchor: { name: 'perpendicular' },
     defaultConnector: { name: 'rounded', args: { radius: 8 } },
     cellViewNamespace: joint.shapes,
     elementView: joint.dia.ElementView,
@@ -1633,7 +1645,7 @@ P1 -> E1 : "Confirmación"
         type: 'app.Ref',
         source: sourceSpec,
         target: targetSpec,
-        router: { name: 'manhattan', args: { padding: 12, step: 12 } },
+        router: { name: 'manhattan', args: { padding: 16, step: 12, startDirections: ['left', 'right'], endDirections: ['left', 'right'] } },
         connector: { name: 'rounded', args: { radius: 8 } },
         attrs: { line: { stroke: linkColor, strokeWidth: 2.25, filter: THEMES[theme].linkGlow } },
         z: 1
