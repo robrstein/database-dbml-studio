@@ -94,6 +94,12 @@
   @keyframes cm-nav-blink { 0%,100%{ background: rgba(99,102,241,0.22); } 40%{ background: rgba(99,102,241,0.5); } }
   .cm-dbml-nav-blink { animation: cm-nav-blink 0.55s ease-in-out 4 !important; }
 
+  /* ---------- Consola de errores (inferior) ---------- */
+  .console-item { border-bottom: 1px solid rgba(51,65,85,0.5); }
+  .console-item:hover { background: rgba(51,65,85,0.5); }
+  #console-list::-webkit-scrollbar { width: 8px; height: 8px; }
+  #console-list::-webkit-scrollbar-thumb { background: #334155; border-radius: 4px; }
+
   /* ---------- Modo presentación ---------- */
   #presentation-exit-bar { display: none; z-index: 200; }
   body.presentation-mode #presentation-exit-bar { display: block; }
@@ -360,8 +366,30 @@
       <div id="presentation-exit-bar" class="absolute top-3 right-3">
         <button id="btn-exit-presentation" class="tbtn active">✕ Salir de presentación (Esc)</button>
       </div>
+
+      <!-- Barra vertical flotante, solo visible en DFD cuando hay flechas
+           etiquetadas con [flow: Nombre]. Los mismos Process/Store/Entity se
+           comparten entre flujos; lo que se filtra es el conjunto de flechas
+           (y los nodos que tocan) de un flujo a la vez, atenuando el resto —
+           igual patrón que el filtro de Colores, pero aislando en vez de solo
+           resaltar. Ver updateFlowSwatches()/applyFlowFilterVisuals(). -->
+      <div id="flow-panel" class="absolute top-3 left-3 hidden flex-col gap-1.5 bg-slate-900/90 border border-slate-700 rounded-lg p-2 max-h-[80%] overflow-y-auto" style="backdrop-filter: blur(4px);">
+        <span class="text-[10px] uppercase tracking-wider text-slate-500 px-1">Flujos</span>
+        <div id="flow-swatches" class="flex flex-col gap-1.5"></div>
+      </div>
     </div>
   </div>
+  </div>
+
+  <!-- ============ CONSOLA DE ERRORES (inferior) ============ -->
+  <div id="console-bar" class="flex items-center gap-2 px-3 py-1.5 bg-slate-800 border-t border-slate-700 shrink-0 cursor-pointer select-none text-xs" title="Mostrar/ocultar consola de errores">
+    <span id="console-toggle-icon" class="text-slate-500 w-3 inline-block text-center">▸</span>
+    <span class="text-slate-400 font-medium">Consola</span>
+    <span id="console-badge" class="hidden px-1.5 py-0.5 rounded-full bg-red-500/20 text-red-400 text-[10px] font-semibold"></span>
+    <span id="console-ok" class="text-emerald-500 text-[11px]">✓ Sin errores</span>
+  </div>
+  <div id="console-panel" class="hidden flex-col shrink-0 bg-slate-950 border-t border-slate-800" style="height:160px;">
+    <div id="console-list" class="flex-1 overflow-y-auto font-mono text-[12px] leading-relaxed"></div>
   </div>
 </div>
 
@@ -478,6 +506,12 @@
   const elTeDelete       = document.getElementById('te-delete');
   const elTeCancel       = document.getElementById('te-cancel');
   const elTeSave         = document.getElementById('te-save');
+  const elConsoleBar     = document.getElementById('console-bar');
+  const elConsoleToggleIcon = document.getElementById('console-toggle-icon');
+  const elConsolePanel   = document.getElementById('console-panel');
+  const elConsoleList    = document.getElementById('console-list');
+  const elConsoleBadge   = document.getElementById('console-badge');
+  const elConsoleOk      = document.getElementById('console-ok');
   const elStatusDot      = document.getElementById('status-dot');
   const elStatusText     = document.getElementById('status-text');
   const elResizer        = document.getElementById('resizer');
@@ -489,6 +523,8 @@
   const elSearchInput    = document.getElementById('search-input');
   const elThemeSelect    = document.getElementById('theme-select');
   const elColorSwatches  = document.getElementById('color-swatches');
+  const elFlowPanel      = document.getElementById('flow-panel');
+  const elFlowSwatches   = document.getElementById('flow-swatches');
   const elBtnClearSel    = document.getElementById('btn-clear-selection');
   const elSelectionCount = document.getElementById('selection-count');
   const elZoomLabel      = document.getElementById('zoom-label');
@@ -621,7 +657,7 @@
     start: [
       { regex: /\/\/.*/, token: 'comment' },
       { regex: /"(?:[^\\"]|\\.)*"/, token: 'string' },
-      { regex: /\b(class)\b/, token: 'keyword' },
+      { regex: /\b(class|package)\b/, token: 'keyword' },
       { regex: /\[/, token: 'bracket', next: 'settings' },
       { regex: /[{}]/, token: 'bracket' },
       { regex: /(<\|--|-->|:)/, token: 'operator' },
@@ -697,6 +733,67 @@
       cm.setGutterMarker(p.line, 'dbml-error-gutter', marker);
     });
   }
+
+  // Vuelca la lista de problemas detectados en la consola inferior (estilo
+  // consola de navegador): un renglón por error, con el número de línea y el
+  // mensaje. Se reconstruye en cada render porque la lista de problemas
+  // cambia junto con el modelo activo.
+  function renderConsolePanel(problems) {
+    elConsoleList.innerHTML = '';
+
+    if (!problems.length) {
+      elConsoleBadge.classList.add('hidden');
+      elConsoleOk.classList.remove('hidden');
+      return;
+    }
+
+    elConsoleOk.classList.add('hidden');
+    elConsoleBadge.textContent = String(problems.length);
+    elConsoleBadge.classList.remove('hidden');
+
+    problems.forEach(function (p) {
+      const row = document.createElement('div');
+      row.className = 'console-item flex items-start gap-2 px-3 py-1.5';
+      row.dataset.line = p.line;
+
+      const icon = document.createElement('span');
+      icon.className = 'text-red-400 shrink-0';
+      icon.textContent = '⚠';
+
+      const lineLabel = document.createElement('span');
+      lineLabel.className = 'text-slate-500 shrink-0';
+      lineLabel.textContent = p.line != null ? 'L' + (p.line + 1) : '';
+
+      const msg = document.createElement('span');
+      msg.className = 'text-slate-300';
+      msg.textContent = p.message;
+
+      row.appendChild(icon);
+      row.appendChild(lineLabel);
+      row.appendChild(msg);
+      elConsoleList.appendChild(row);
+    });
+  }
+
+  function setConsolePanelOpen(open) {
+    elConsolePanel.classList.toggle('hidden', !open);
+    elConsolePanel.classList.toggle('flex', open);
+    elConsoleToggleIcon.textContent = open ? '▾' : '▸';
+  }
+
+  elConsoleBar.addEventListener('click', function () {
+    setConsolePanelOpen(elConsolePanel.classList.contains('hidden'));
+  });
+
+  // Clic en un error de la consola: mueve el editor de texto (dbml/uml/dfd)
+  // hasta esa línea y la resalta, delegando el evento sobre la lista entera
+  // porque los renglones se recrean en cada render.
+  elConsoleList.addEventListener('click', function (evt) {
+    const row = evt.target.closest('.console-item');
+    if (!row) return;
+    const line = parseInt(row.dataset.line, 10);
+    if (!isNaN(line)) jumpToDbmlLine(line);
+  });
 
   // Navega el editor al bloque de la tabla/clase/nodo/enum con ese nombre,
   // añade una marca índigo en el gutter, y hace parpadear el fondo de esas
@@ -776,6 +873,25 @@
     }
   }
 
+  // Salta a una línea específica del editor (usado al pinchar un error en la
+  // consola inferior): centra la vista, ubica el cursor y hace parpadear el
+  // fondo de esa línea para que el ojo la encuentre de inmediato.
+  function jumpToDbmlLine(line) {
+    if (line == null || line < 0 || line >= cm.lineCount()) return;
+    if (navClearTimer) { clearTimeout(navClearTimer); navClearTimer = null; }
+    const total = cm.lineCount();
+    for (let i = 0; i < total; i++) cm.removeLineClass(i, 'background', 'cm-dbml-nav-blink');
+    cm.scrollIntoView({ line: line, ch: 0 }, 100);
+    cm.setCursor({ line: line, ch: 0 });
+    cm.focus();
+    cm.addLineClass(line, 'background', 'cm-dbml-nav-blink');
+    navClearTimer = setTimeout(function () {
+      cm.removeLineClass(line, 'background', 'cm-dbml-nav-blink');
+      navClearTimer = null;
+    }, 2400);
+    setMobileView('editor');
+  }
+
 
   /* =========================================================================
      1. CONFIGURACIÓN / CLAVES DE PERSISTENCIA
@@ -792,7 +908,11 @@
     snap: 'dbmlstudio.snap',
     models: 'dbmlstudio.models',
     notes: 'dbmlstudio.notes',
-    activeModelType: 'dbmlstudio.activeModelType'
+    activeModelType: 'dbmlstudio.activeModelType',
+    collapsedGroups: 'dbmlstudio.collapsedGroups',
+    collapsedGroupPositions: 'dbmlstudio.collapsedGroupPositions',
+    currentProjectId: 'dbmlstudio.currentProjectId',
+    flowPositions: 'dbmlstudio.flowPositions'
   };
 
   const DEFAULT_DBML =
@@ -901,6 +1021,8 @@ P1 -> E1 : "Confirmación"
     suppressHistoryPush: false,
     selected: new Set(),        // ids de tablas seleccionadas
     activeColorFilter: null,    // color activo seleccionado vía swatch
+    activeFlowFilter: null,     // nombre de flujo DFD activo (chip clickeado), o null — sub-diagrama aislado
+    flowPositions: {},          // { flowName: { nodeName: {x,y} } } — layout propio de cada flujo DFD
     rubberBand: null,           // datos del recuadro de selección en curso
     dragGroup: null,            // datos del arrastre múltiple en curso
     groupFrameDrag: null,       // datos del arrastre de un TableGroup completo (vía su marco)
@@ -980,6 +1102,12 @@ P1 -> E1 : "Confirmación"
     // Elimina bloques "indexes { ... }" para no confundir al parser de campos
     const cleaned = text.replace(/indexes\s*\{[^}]*\}/gi, '');
 
+    // Quita notas multilínea "Note: '''...'''" / "Note: \"\"\"...\"\"\"" completas:
+    // sin esto, sus líneas de continuación (texto libre) se escanean como si
+    // fueran declaraciones de campo, y una palabra suelta que coincida con el
+    // nombre de una columna real dispara un falso "campo repetido".
+    const stripMultilineNotes = s => s.replace(/Note\s*:\s*('''[\s\S]*?'''|"""[\s\S]*?""")/gi, '');
+
     // --- Tablas ---
     const tableRe = /Table\s+([a-zA-Z0-9_."]+)\s*(?:as\s+[a-zA-Z0-9_]+)?\s*(?:\[([^\]]*)\])?\s*\{([\s\S]*?)\}/gi;
     let m;
@@ -993,7 +1121,7 @@ P1 -> E1 : "Confirmación"
       if (colorMatch) color = colorMatch[1];
 
       const fields = [];
-      const lines = body.split('\n');
+      const lines = stripMultilineNotes(body).split('\n');
       lines.forEach(line => {
         const trimmed = line.trim();
         if (!trimmed) return;
@@ -1040,7 +1168,7 @@ P1 -> E1 : "Confirmación"
       if (eColorMatch) eColor = eColorMatch[1];
 
       const values = [];
-      eBody.split('\n').forEach(line => {
+      stripMultilineNotes(eBody).split('\n').forEach(line => {
         const t = line.trim();
         if (!t || /^\/\//.test(t) || /^Note\b/i.test(t)) return;
         const valMatch = t.match(/^([a-zA-Z0-9_."]+)/);
@@ -1099,12 +1227,40 @@ P1 -> E1 : "Confirmación"
     const groups = [];
     if (!text || !text.trim()) return { tables, refs, groups };
 
-    const classRe = /class\s+([a-zA-Z0-9_."]+)\s*(?:\[([^\]]*)\])?\s*\{([\s\S]*?)\}/gi;
-    let m;
-    while ((m = classRe.exec(text)) !== null) {
-      const rawName = m[1].replace(/"/g, '');
-      const settings = m[2] || '';
-      const body = m[3] || '';
+    // Extrae bloques "<header>{ ... }" balanceando llaves carácter a carácter
+    // en vez de un regex no-codicioso simple: soporta anidamiento arbitrario
+    // (un "package { class { attr {PK} } }" tiene 3 niveles de llaves, y
+    // "[\s\S]*?\}" cortaría en la primera "}" que encuentre, sin importar
+    // el nivel). headerRegex debe terminar justo en la "{" de apertura
+    // (inclusive) del bloque que se quiere extraer.
+    function extractBracedBlocks(src, headerRegex) {
+      const blocks = [];
+      const flags = headerRegex.flags.includes('g') ? headerRegex.flags : headerRegex.flags + 'g';
+      const re = new RegExp(headerRegex.source, flags);
+      let hm;
+      while ((hm = re.exec(src)) !== null) {
+        const declStart = hm.index;
+        const bodyStart = re.lastIndex;
+        let depth = 1, i = bodyStart;
+        while (i < src.length && depth > 0) {
+          if (src[i] === '{') depth++;
+          else if (src[i] === '}') depth--;
+          i++;
+        }
+        if (depth !== 0) break; // llave sin cerrar: cuerpo mal formado, se descarta el resto
+        blocks.push({ match: hm, declStart, declEnd: i, body: src.slice(bodyStart, i - 1) });
+        re.lastIndex = i;
+      }
+      return blocks;
+    }
+
+    // --- Clases: se buscan en TODO el texto por igual, estén sueltas o
+    //     anidadas dentro de un "package { ... }" (ver más abajo) ---
+    const classHeaderRe = /class\s+([a-zA-Z0-9_."]+)\s*(?:\[([^\]]*)\])?\s*\{/gi;
+    extractBracedBlocks(text, classHeaderRe).forEach(blk => {
+      const rawName = blk.match[1].replace(/"/g, '');
+      const settings = blk.match[2] || '';
+      const body = blk.body;
 
       let color = null;
       const colorMatch = settings.match(/headercolor:\s*["']?(#[0-9a-fA-F]{3,8}|[a-zA-Z]+)["']?/i);
@@ -1120,18 +1276,63 @@ P1 -> E1 : "Confirmación"
           fields.push({ name: methodMatch[2] + '()', type: methodMatch[4] || '', pk: false, visibility: methodMatch[1] || '+' });
           return;
         }
-        const attrMatch = trimmed.match(/^([+\-#~]?)\s*([a-zA-Z0-9_]+)\s*:\s*([a-zA-Z0-9_<>,.\[\] ]+)$/);
+
+        // Notación tipo ER "{PK}", "{U,NN}", etc. al final de un atributo
+        // (primary key / unique / not null): se separa del resto de la línea
+        // antes de matchear el tipo, para no perder el campo entero si el
+        // usuario la usa. Por ahora solo "PK" tiene efecto visual (negrita);
+        // el resto se acepta y se descarta, igual que en DBML.
+        const modMatch = trimmed.match(/^(.*?)\s*\{([^}]*)\}\s*$/);
+        const attrLine = modMatch ? modMatch[1] : trimmed;
+        const mods = modMatch ? modMatch[2].split(/[,\s]+/).map(s => s.trim().toUpperCase()).filter(Boolean) : [];
+        const isPk = mods.includes('PK');
+
+        const attrMatch = attrLine.match(/^([+\-#~]?)\s*([a-zA-Z0-9_]+)\s*:\s*([a-zA-Z0-9_<>,.()\[\] ]+)$/);
         if (attrMatch) {
-          fields.push({ name: attrMatch[2], type: attrMatch[3].trim(), pk: false, visibility: attrMatch[1] || '+' });
+          fields.push({ name: attrMatch[2], type: attrMatch[3].trim(), pk: isPk, visibility: attrMatch[1] || '+' });
         }
       });
 
       tables.push({ name: rawName, color, fields, isEnum: false, kind: 'class' });
-    }
+    });
+
+    // --- package "Nombre": agrupa visualmente un conjunto de clases, igual
+    //     que TableGroup en DBML. Soporta dos formas, mezclables:
+    //       1) clases declaradas completas ADENTRO del bloque (anidadas)
+    //       2) referencias sueltas por nombre a clases declaradas afuera
+    //          (un nombre por línea, igual que TableGroup) ---
+    const packageHeaderRe = /package\s+([a-zA-Z0-9_." ]+?)\s*\{/gi;
+    extractBracedBlocks(text, packageHeaderRe).forEach(pkg => {
+      const pName = pkg.match[1].replace(/"/g, '').trim();
+      const memberNames = [];
+      const seen = new Set();
+
+      const nestedClasses = extractBracedBlocks(pkg.body, classHeaderRe);
+      nestedClasses.forEach(cb => {
+        const name = cb.match[1].replace(/"/g, '');
+        if (!seen.has(name)) { seen.add(name); memberNames.push(name); }
+      });
+
+      // Tapa con espacios (mismo largo, para no correr índices) cada
+      // declaración "class {...}" anidada ya contabilizada arriba, y lee las
+      // líneas sueltas restantes como referencias por nombre.
+      let bareBody = pkg.body;
+      nestedClasses.forEach(cb => {
+        bareBody = bareBody.slice(0, cb.declStart) + ' '.repeat(cb.declEnd - cb.declStart) + bareBody.slice(cb.declEnd);
+      });
+      bareBody.split('\n').forEach(line => {
+        const t = line.trim();
+        if (!t || /^\/\//.test(t)) return;
+        const nameOnly = t.split(/\s+/)[0].replace(/"/g, '');
+        if (nameOnly && !seen.has(nameOnly)) { seen.add(nameOnly); memberNames.push(nameOnly); }
+      });
+
+      if (memberNames.length) groups.push({ name: pName, tables: memberNames });
+    });
 
     text.split('\n').forEach((lineText, idx) => {
       const trimmed = lineText.trim();
-      if (!trimmed || /^\/\//.test(trimmed) || /^class\b/i.test(trimmed)) return;
+      if (!trimmed || /^\/\//.test(trimmed) || /^class\b/i.test(trimmed) || /^package\b/i.test(trimmed)) return;
 
       // herencia: Padre <|-- Hijo  (el hijo hereda del padre)
       const inheritMatch = trimmed.match(/^([a-zA-Z0-9_]+)\s*<\|--\s*([a-zA-Z0-9_]+)/);
@@ -1169,7 +1370,12 @@ P1 -> E1 : "Confirmación"
     if (!text || !text.trim()) return { tables, refs, groups };
 
     const nodeRe = /^(Process|Entity|Store)\s+([a-zA-Z0-9_]+)\s+"([^"]*)"/i;
-    const flowRe = /^([a-zA-Z0-9_]+)\s*->\s*([a-zA-Z0-9_]+)\s*(?::\s*"([^"]*)")?/;
+    // El bloque final "[flow: Nombre, Otro Nombre]" etiqueta a qué flujo(s)
+    // nombrado(s) pertenece esta línea — un mismo Process/Store/Entity puede
+    // participar en varios flujos (login, magic code, etc.), así que lo que
+    // se agrupa no son los nodos (ya se comparten entre todos) sino cada
+    // flecha individual. Ver applyFlowFilter() para el filtro que usa esto.
+    const flowRe = /^([a-zA-Z0-9_]+)\s*->\s*([a-zA-Z0-9_]+)\s*(?::\s*"([^"]*)")?\s*(?:\[\s*flow\s*:\s*([^\]]*)\])?/i;
     const idToName = {};
 
     const lines = text.split('\n');
@@ -1189,9 +1395,10 @@ P1 -> E1 : "Confirmación"
       if (!m) return;
       const fromName = idToName[m[1]], toName = idToName[m[2]];
       if (!fromName || !toName) return; // referencia a un id de nodo inexistente
+      const flows = m[4] ? m[4].split(',').map(s => s.trim()).filter(Boolean) : [];
       refs.push({
         from: { table: fromName, field: '' }, to: { table: toName, field: '' },
-        cardinality: { source: '', target: '' }, line: idx, kind: 'flow', label: m[3] || ''
+        cardinality: { source: '', target: '' }, line: idx, kind: 'flow', label: m[3] || '', flows: flows
       });
     });
 
@@ -1495,6 +1702,103 @@ P1 -> E1 : "Confirmación"
     return problems;
   }
 
+  // Validaciones para UML: clases repetidas, miembros (atributos/métodos)
+  // repetidos dentro de una misma clase, y asociaciones/herencias que
+  // apuntan a una clase que no existe.
+  function computeUMLProblems(parsed, rawText) {
+    const problems = [];
+    const declLines = {};
+    const classDeclRe = /^\s*class\s+"?([a-zA-Z0-9_]+)"?/i;
+    rawText.split('\n').forEach((line, idx) => {
+      const m = line.match(classDeclRe);
+      if (!m) return;
+      (declLines[m[1]] = declLines[m[1]] || []).push(idx);
+    });
+
+    Object.keys(declLines).forEach(name => {
+      const lines = declLines[name];
+      if (lines.length > 1) {
+        lines.forEach(line => {
+          problems.push({ line, message: 'La clase "' + name + '" está repetida (aparece ' + lines.length + ' veces).' });
+        });
+      }
+    });
+
+    const classMap = {};
+    parsed.tables.forEach(t => { classMap[t.name] = t; });
+    parsed.refs.forEach(ref => {
+      if (ref.line == null) return;
+      if (!classMap[ref.from.table]) { problems.push({ line: ref.line, message: 'La clase "' + ref.from.table + '" no existe.' }); return; }
+      if (!classMap[ref.to.table]) { problems.push({ line: ref.line, message: 'La clase "' + ref.to.table + '" no existe.' }); return; }
+    });
+
+    parsed.tables.forEach(t => {
+      const counts = {};
+      t.fields.forEach(f => { counts[f.name] = (counts[f.name] || 0) + 1; });
+      const dupNames = Object.keys(counts).filter(n => counts[n] > 1);
+      if (!dupNames.length) return;
+      const lines = declLines[t.name] || [];
+      const line = lines.length ? lines[0] : null;
+      if (line == null) return;
+      dupNames.forEach(fname => {
+        problems.push({ line, message: 'El miembro "' + fname + '" está repetido dentro de "' + t.name + '" (' + counts[fname] + ' veces).' });
+      });
+    });
+
+    return problems;
+  }
+
+  // Validaciones para DFD: ids de nodo repetidos, etiquetas repetidas
+  // (rompen la resolución de flujos por nombre) y flujos que apuntan a
+  // un id de nodo inexistente (el parser los descarta en silencio).
+  function computeDFDProblems(parsed, rawText) {
+    const problems = [];
+    const nodeRe = /^(Process|Entity|Store)\s+([a-zA-Z0-9_]+)\s+"([^"]*)"/i;
+    const flowRe = /^([a-zA-Z0-9_]+)\s*->\s*([a-zA-Z0-9_]+)/;
+    const idLines = {};
+    const idLabel = {};
+    const labelLines = {};
+    const lines = rawText.split('\n');
+
+    lines.forEach((lineText, idx) => {
+      const m = lineText.trim().match(nodeRe);
+      if (!m) return;
+      const id = m[2], label = m[3];
+      (idLines[id] = idLines[id] || []).push(idx);
+      idLabel[id] = label;
+      (labelLines[label] = labelLines[label] || []).push(idx);
+    });
+
+    Object.keys(idLines).forEach(id => {
+      const ls = idLines[id];
+      if (ls.length > 1) ls.forEach(line => problems.push({ line, message: 'El id de nodo "' + id + '" está repetido (aparece ' + ls.length + ' veces).' }));
+    });
+    Object.keys(labelLines).forEach(label => {
+      const ls = labelLines[label];
+      if (ls.length > 1) ls.forEach(line => problems.push({ line, message: 'La etiqueta "' + label + '" está repetida en varios nodos (aparece ' + ls.length + ' veces).' }));
+    });
+
+    lines.forEach((lineText, idx) => {
+      const trimmed = lineText.trim();
+      if (!trimmed || /^\/\//.test(trimmed) || nodeRe.test(trimmed)) return;
+      const m = trimmed.match(flowRe);
+      if (!m) return;
+      if (!idLabel[m[1]]) problems.push({ line: idx, message: 'El nodo "' + m[1] + '" no existe.' });
+      if (!idLabel[m[2]]) problems.push({ line: idx, message: 'El nodo "' + m[2] + '" no existe.' });
+    });
+
+    return problems;
+  }
+
+  // Punto único de despacho: calcula los problemas/errores del modelo activo
+  // según su formato (dbml/uml/dfd), usados tanto para marcar el gutter del
+  // editor como para poblar la consola de errores inferior.
+  function computeActiveModelProblems(modelType, parsed, rawText) {
+    if (modelType === 'uml') return computeUMLProblems(parsed, rawText);
+    if (modelType === 'dfd') return computeDFDProblems(parsed, rawText);
+    return computeRefProblems(parsed).concat(computeStructuralProblems(parsed, rawText));
+  }
+
   // Notación crow's-foot estándar ER:
   //   N → pata de gallo (tres líneas divergentes = "muchos")
   //   1 → barra perpendicular + pequeña barra interior (= "exactamente uno")
@@ -1522,11 +1826,9 @@ P1 -> E1 : "Confirmación"
     const parsed = getActiveParser()(dbmlText);
     state.parsed = parsed;
 
-    if (modelType === 'dbml') {
-      markDbmlErrors(computeRefProblems(parsed).concat(computeStructuralProblems(parsed, dbmlText)));
-    } else {
-      clearDbmlMarkers(); // las validaciones de Refs/duplicados solo aplican al modelo DBML por ahora
-    }
+    const problems = computeActiveModelProblems(modelType, parsed, dbmlText);
+    markDbmlErrors(problems);
+    renderConsolePanel(problems);
 
     elEmptyHint.style.display = (parsed.tables.length || (state.notes[state.activeModelType] || []).length) ? 'none' : 'flex';
 
@@ -1571,10 +1873,27 @@ P1 -> E1 : "Confirmación"
 
     const isDFDNode = table => table.kind === 'process' || table.kind === 'entity' || table.kind === 'store';
 
-    parsed.tables.forEach((table, idx) => {
+    // Un flujo DFD aislado se trata como un sub-diagrama propio: solo se
+    // crean los nodos/flechas que participan de ese flujo (el resto ni
+    // siquiera se agrega al grafo, no es solo atenuado) y las posiciones se
+    // leen/guardan en su propio bucket — ver saveAllPositions(). Sin filtro
+    // activo, todo el modelo se renderiza como siempre.
+    let renderTables = parsed.tables;
+    let renderRefs = parsed.refs;
+    if (modelType === 'dfd' && state.activeFlowFilter) {
+      renderRefs = parsed.refs.filter(r => (r.flows || []).includes(state.activeFlowFilter));
+      const touchedNames = new Set();
+      renderRefs.forEach(r => { touchedNames.add(r.from.table); touchedNames.add(r.to.table); });
+      renderTables = parsed.tables.filter(t => touchedNames.has(t.name));
+    }
+    const activeFlowBucket = (modelType === 'dfd' && state.activeFlowFilter)
+      ? (state.flowPositions[state.activeFlowFilter] || {})
+      : null;
+
+    renderTables.forEach((table, idx) => {
       if (hiddenByCollapse[table.name]) return; // ya cubierta por el chip de su grupo
       const headerColor = colorFor(table, idx, theme);
-      const saved = state.positions[table.name];
+      const saved = (activeFlowBucket && activeFlowBucket[table.name]) || state.positions[table.name];
       const pos = saved || { x: 80 + (idx % 4) * 280, y: 80 + Math.floor(idx / 4) * 220 };
 
       let width, height, markup, attrsObj;
@@ -1606,6 +1925,13 @@ P1 -> E1 : "Confirmación"
         el.attr(isDFDNode(table) ? 'body/filter' : 'body/filter', THEMES[theme].filter);
       }
       el.set('tableName', table.name, { silent: true });
+      // En DBML/UML el color vive en "header/fill" (el hover nunca lo toca).
+      // En un nodo DFD process/entity el color ES el "body/stroke" (su borde
+      // coloreado) — clearHoverHighlight necesita saber a qué color volver
+      // en vez de asumir siempre el gris neutro del tema, o el color se
+      // pierde para siempre en el primer mouseout.
+      const restStroke = (isDFDNode(table) && table.kind !== 'store') ? headerColor : THEMES[theme].stroke;
+      el.set('restStroke', restStroke, { silent: true });
       elementsByName[table.name] = el;
       newElements.push(el);
     });
@@ -1619,7 +1945,7 @@ P1 -> E1 : "Confirmación"
       return t.fields.findIndex(f => f.name === fieldName);
     }
 
-    parsed.refs.forEach(ref => {
+    renderRefs.forEach(ref => {
       const src = elementsByName[ref.from.table];
       const tgt = elementsByName[ref.to.table];
       if (!src || !tgt) return;
@@ -1648,7 +1974,8 @@ P1 -> E1 : "Confirmación"
         router: { name: 'manhattan', args: { padding: 16, step: 12, startDirections: ['left', 'right'], endDirections: ['left', 'right'] } },
         connector: { name: 'rounded', args: { radius: 8 } },
         attrs: { line: { stroke: linkColor, strokeWidth: 2.25, filter: THEMES[theme].linkGlow } },
-        z: 1
+        z: 1,
+        flows: ref.flows || [] // etiquetas [flow: Nombre] del DFD — ver applyFlowFilterVisuals()
       });
 
       if (modelType === 'dbml') {
@@ -1733,6 +2060,7 @@ P1 -> E1 : "Confirmación"
     state.selected.forEach(id => highlightElement(id));
     updateSelectionUI();
     updateColorSwatches();
+    updateFlowSwatches();
 
     if (!opts.keepPositions && !Object.keys(state.positions).length) {
       applyLayout(state.layoutMode, { silent: true });
@@ -1744,6 +2072,10 @@ P1 -> E1 : "Confirmación"
      ========================================================================= */
   function getElements() { return graph.getElements().filter(el => el.get('type') !== 'app.Group' && el.get('type') !== 'app.Note'); }
 
+  function persistFlowPositions() {
+    localStorage.setItem(LS_KEYS.flowPositions + '.' + state.activeModelType, JSON.stringify(state.flowPositions));
+  }
+
   function saveAllPositions() {
     // IMPORTANTE: se parte de las posiciones ya guardadas (Object.assign) en
     // vez de un objeto vacío. Si se reemplazara por completo, cualquier
@@ -1751,12 +2083,29 @@ P1 -> E1 : "Confirmación"
     // recordada de sus tablas ocultas (que no están en getElements() en ese
     // momento, al no existir como elementos en el lienzo).
     const positions = Object.assign({}, state.positions);
+
+    // Un flujo DFD aislado se renderiza como su propio sub-diagrama (ver
+    // renderGraph): mientras está activo, TODO lo que existe en el grafo
+    // pertenece a ese flujo, así que su posición se guarda en el bucket
+    // propio del flujo en vez de en el layout global — el layout global
+    // permanece intacto hasta que se vuelve a ver el modelo completo.
+    const flowActive = state.activeModelType === 'dfd' && state.activeFlowFilter;
+    const flowBucket = flowActive
+      ? (state.flowPositions[state.activeFlowFilter] = state.flowPositions[state.activeFlowFilter] || {})
+      : null;
+
     getElements().forEach(el => {
       const name = el.get('tableName');
-      if (name) positions[name] = el.position();
+      if (!name) return;
+      if (flowActive) {
+        flowBucket[name] = el.position();
+      } else {
+        positions[name] = el.position();
+      }
     });
     state.positions = positions;
     localStorage.setItem(LS_KEYS.positions + '.' + state.activeModelType, JSON.stringify(positions));
+    if (flowActive) persistFlowPositions();
   }
 
   function animateTo(el, x, y) {
@@ -1822,6 +2171,31 @@ P1 -> E1 : "Confirmación"
     });
   }
 
+  // Persiste qué grupos están colapsados y la posición manual de sus chips,
+  // por tipo de modelo (igual que las posiciones de tabla) — sin esto, el
+  // borrador sin guardar pierde el colapso/posición de los chips al
+  // refrescar la página, porque antes solo viajaban dentro de "proyectos
+  // guardados"/slots de vista/export JSON, nunca en el autoguardado.
+  function persistCollapsedGroupsState() {
+    localStorage.setItem(LS_KEYS.collapsedGroups + '.' + state.activeModelType, JSON.stringify(Array.from(state.collapsedGroups)));
+    localStorage.setItem(LS_KEYS.collapsedGroupPositions + '.' + state.activeModelType, JSON.stringify(state.collapsedGroupPositions));
+  }
+
+  function loadCollapsedGroupsState(type) {
+    try {
+      state.collapsedGroups = new Set(JSON.parse(localStorage.getItem(LS_KEYS.collapsedGroups + '.' + type) || '[]'));
+    } catch (e) { state.collapsedGroups = new Set(); }
+    try {
+      state.collapsedGroupPositions = JSON.parse(localStorage.getItem(LS_KEYS.collapsedGroupPositions + '.' + type) || '{}');
+    } catch (e) { state.collapsedGroupPositions = {}; }
+  }
+
+  function loadFlowPositionsState(type) {
+    try {
+      state.flowPositions = JSON.parse(localStorage.getItem(LS_KEYS.flowPositions + '.' + type) || '{}');
+    } catch (e) { state.flowPositions = {}; }
+  }
+
   // Calcula el "ancla natural" de un grupo colapsado: el promedio de las
   // últimas posiciones conocidas de sus tablas miembro (antes de colapsar).
   function computeChipAnchor(g) {
@@ -1885,6 +2259,8 @@ P1 -> E1 : "Confirmación"
       state.collapsedGroups.add(name);
     }
     renderGraph(getDbml(), { keepPositions: true });
+    saveAllPositions(); // persiste el desplazamiento de las tablas miembro al expandir un chip movido a mano
+    persistCollapsedGroupsState();
   }
 
   // Selecciona todas las tablas miembro de un TableGroup (usado al hacer clic
@@ -2247,7 +2623,7 @@ P1 -> E1 : "Confirmación"
     const el = graph.getCell(id);
     if (!el) return;
     const th = THEMES[state.theme];
-    el.attr('body/stroke', th.stroke);
+    el.attr('body/stroke', el.get('restStroke') || th.stroke);
     el.attr('body/strokeWidth', th.strokeWidth);
   }
 
@@ -2321,7 +2697,11 @@ P1 -> E1 : "Confirmación"
       el.attr('body/opacity', 1);
       el.attr('headerText/opacity', 1);
       if (!state.selected.has(el.id)) {
-        el.attr('body/stroke', th.stroke);
+        // Restaura el color "de reposo" propio del elemento (ver renderGraph):
+        // el gris neutro del tema para DBML/UML/DFD-store, o el color propio
+        // del nodo para un DFD process/entity (ahí el color vive en este
+        // mismo atributo, no en el header).
+        el.attr('body/stroke', el.get('restStroke') || th.stroke);
         el.attr('body/strokeWidth', th.strokeWidth);
       } else {
         highlightElement(el.id);
@@ -2546,6 +2926,7 @@ P1 -> E1 : "Confirmación"
     const el = graph.getCell(groupElementId(state.chipDrag.groupName));
     if (el) state.collapsedGroupPositions[state.chipDrag.groupName] = el.position();
     state.chipDrag = null;
+    persistCollapsedGroupsState();
   }
   document.addEventListener('mousemove', handleChipDragMove);
   document.addEventListener('touchmove', handleChipDragMove, { passive: false });
@@ -2657,6 +3038,76 @@ P1 -> E1 : "Confirmación"
       });
       elColorSwatches.appendChild(btn);
     });
+  }
+
+  /* =========================================================================
+     7b-DFD. FILTRO DE FLUJOS (DFD) — a diferencia de TableGroup/package, que
+     agrupan NODOS, un "flujo" DFD agrupa FLECHAS: los mismos Process/Store/
+     Entity se comparten entre varios flujos (login, magic code, scraping...),
+     así que lo que se aísla es el conjunto de refs etiquetadas con
+     "[flow: Nombre]" en el texto, atenuando todo lo que no participa de ese
+     flujo (nodos no tocados por ninguna de sus flechas). Un flujo aislado se
+     trata como su propio sub-diagrama: los nodos/flechas que no participan
+     NI SIQUIERA SE CREAN en el grafo (ver renderGraph), así que todo lo
+     demás — selección, minimapa, layouts — ya opera solo sobre lo visible
+     sin necesitar lógica aparte, y cada flujo guarda su propio layout en
+     state.flowPositions (ver saveAllPositions).
+     ========================================================================= */
+  function getAllFlowNames() {
+    const seen = new Set();
+    const names = [];
+    (state.parsed.refs || []).forEach(ref => {
+      (ref.flows || []).forEach(f => {
+        if (!seen.has(f)) { seen.add(f); names.push(f); }
+      });
+    });
+    return names;
+  }
+
+  function applyFlowFilterVisuals() {
+    Array.from(elFlowSwatches.children).forEach(b => {
+      b.classList.toggle('active', b.textContent === state.activeFlowFilter);
+    });
+  }
+
+  // Punto de entrada para los chips: cambia el flujo activo (o lo limpia si
+  // ya estaba activo) y reconstruye el grafo entero — ver renderGraph(),
+  // que decide qué nodos/flechas crear y con qué posición según el filtro.
+  function applyFlowFilter(name) {
+    state.activeFlowFilter = (state.activeFlowFilter === name) ? null : name;
+    renderGraph(getDbml(), { keepPositions: true });
+  }
+
+  function updateFlowSwatches() {
+    if (state.activeModelType !== 'dfd') {
+      elFlowPanel.classList.add('hidden');
+      elFlowPanel.classList.remove('flex');
+      return;
+    }
+    const names = getAllFlowNames();
+    if (!names.length) {
+      elFlowPanel.classList.add('hidden');
+      elFlowPanel.classList.remove('flex');
+      state.activeFlowFilter = null;
+      return;
+    }
+    // Si el flujo activo ya no existe (se borró/renombró en el texto), se limpia.
+    if (state.activeFlowFilter && !names.includes(state.activeFlowFilter)) {
+      state.activeFlowFilter = null;
+    }
+    elFlowPanel.classList.remove('hidden');
+    elFlowPanel.classList.add('flex');
+    elFlowSwatches.innerHTML = '';
+    names.forEach(name => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'tbtn w-full text-left' + (state.activeFlowFilter === name ? ' active' : '');
+      btn.textContent = name;
+      btn.title = 'Aislar el flujo "' + name + '" (clic de nuevo para mostrar todo)';
+      btn.addEventListener('click', function () { applyFlowFilter(name); });
+      elFlowSwatches.appendChild(btn);
+    });
+    applyFlowFilterVisuals();
   }
 
   /* =========================================================================
@@ -3444,6 +3895,7 @@ P1 -> E1 : "Confirmación"
       // ahora mismo en el lienzo (colapsado vs expandido).
       state.collapsedGroups = new Set(snap.collapsedGroups || []);
       state.collapsedGroupPositions = Object.assign({}, snap.collapsedGroupPositions || {});
+      persistCollapsedGroupsState();
       if (snap.positions) {
         state.positions = Object.assign({}, state.positions, snap.positions);
       }
@@ -3503,7 +3955,12 @@ P1 -> E1 : "Confirmación"
   function updateMinimap() {
     if (!state.minimapVisible) return;
     const tableEls = getElements(); // ya excluye marcos/chips de grupo
-    if (!tableEls.length) {
+    // Marcos de TableGroup (expandidos) y chips (colapsados): se incluyen aparte
+    // porque, colapsado, el chip ES el único elemento visible del grupo — sin
+    // esto, un grupo colapsado desaparecía por completo del minimapa.
+    const groupEls = graph.getElements().filter(el => el.get('type') === 'app.Group');
+    const allEls = tableEls.concat(groupEls);
+    if (!allEls.length) {
       elMinimapPanel.classList.add('hidden');
       mmTransform = null;
       return;
@@ -3511,7 +3968,7 @@ P1 -> E1 : "Confirmación"
     elMinimapPanel.classList.remove('hidden');
 
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    tableEls.forEach(el => {
+    allEls.forEach(el => {
       const p = el.position(), s = el.size();
       minX = Math.min(minX, p.x); minY = Math.min(minY, p.y);
       maxX = Math.max(maxX, p.x + s.width); maxY = Math.max(maxY, p.y + s.height);
@@ -3526,10 +3983,29 @@ P1 -> E1 : "Confirmación"
     mmCtx.fillStyle = '#0f172a';
     mmCtx.fillRect(0, 0, MM_W, MM_H);
 
-    // tablas/enums como rectángulos en miniatura con su color de cabecera
+    // Marcos de TableGroup expandidos: relleno tenue + contorno sólido de
+    // fondo, detrás de las tablas que agrupan. A esta escala tan chica un
+    // trazo punteado de 1px prácticamente desaparece (y las tablas, dibujadas
+    // encima, tapan todo menos el margen) — por eso acá va sólido y con
+    // relleno, a diferencia del marco punteado del lienzo real.
+    groupEls.forEach(el => {
+      if (el.get('collapsed')) return;
+      const p = el.position(), s = el.size();
+      const w = Math.max(2, s.width * scale), h = Math.max(2, s.height * scale);
+      mmCtx.fillStyle = 'rgba(99,102,241,0.22)';
+      mmCtx.fillRect(p.x * scale + offsetX, p.y * scale + offsetY, w, h);
+      mmCtx.strokeStyle = '#818cf8';
+      mmCtx.lineWidth = 1.25;
+      mmCtx.strokeRect(p.x * scale + offsetX, p.y * scale + offsetY, w, h);
+    });
+
+    // tablas/enums como rectángulos en miniatura con su color de cabecera.
+    // Un nodo DFD no tiene selector "header" (su color vive en el borde
+    // "body/stroke", o en "storelines/stroke" si es un Store) — sin este
+    // fallback, todos los nodos DFD se veían del mismo indigo genérico acá.
     tableEls.forEach(el => {
       const p = el.position(), s = el.size();
-      const color = el.attr('header/fill') || '#6366f1';
+      const color = el.attr('header/fill') || el.attr('body/stroke') || el.attr('storelines/stroke') || '#6366f1';
       const isSel = state.selected.has(el.id);
       mmCtx.fillStyle = color;
       mmCtx.globalAlpha = isSel ? 1 : 0.75;
@@ -3542,6 +4018,24 @@ P1 -> E1 : "Confirmación"
       }
     });
     mmCtx.globalAlpha = 1;
+
+    // Chips de TableGroup colapsados: bloque relleno indigo (representan el
+    // grupo entero, ya que sus tablas miembro no existen como elementos
+    // propios en el lienzo mientras está colapsado).
+    groupEls.forEach(el => {
+      if (!el.get('collapsed')) return;
+      const p = el.position(), s = el.size();
+      const w = Math.max(2, s.width * scale), h = Math.max(2, s.height * scale);
+      mmCtx.fillStyle = '#6366f1';
+      mmCtx.globalAlpha = 0.65;
+      mmCtx.fillRect(p.x * scale + offsetX, p.y * scale + offsetY, w, h);
+      mmCtx.globalAlpha = 1;
+      mmCtx.strokeStyle = '#a5b4fc';
+      mmCtx.lineWidth = 1;
+      mmCtx.setLineDash([2, 1.5]);
+      mmCtx.strokeRect(p.x * scale + offsetX, p.y * scale + offsetY, w, h);
+      mmCtx.setLineDash([]);
+    });
 
     // viewport actual (área visible del lienzo principal)
     const tr = paper.translate(), sc = paper.scale();
@@ -3818,6 +4312,9 @@ P1 -> E1 : "Confirmación"
       notes: Object.assign({}, state.notes),
       theme: state.theme,
       layoutMode: state.layoutMode,
+      collapsedGroups: Array.from(state.collapsedGroups),
+      collapsedGroupPositions: Object.assign({}, state.collapsedGroupPositions),
+      flowPositions: Object.assign({}, state.flowPositions),
       updatedAt: Date.now()
     };
   }
@@ -3860,6 +4357,7 @@ P1 -> E1 : "Confirmación"
     list.push({ id, name: name.trim(), updatedAt: snap.updatedAt });
     setProjectsIndex(list);
     state.currentProjectId = id;
+    localStorage.setItem(LS_KEYS.currentProjectId, id);
     refreshProjectSelect();
   }
 
@@ -3876,12 +4374,17 @@ P1 -> E1 : "Confirmación"
     localStorage.removeItem(LS_KEYS.projectPrefix + state.currentProjectId);
     setProjectsIndex(list.filter(p => p.id !== state.currentProjectId));
     state.currentProjectId = null;
+    localStorage.removeItem(LS_KEYS.currentProjectId);
     refreshProjectSelect();
   }
 
+  // Recuerda qué modelo guardado quedó seleccionado en el <select>, para que
+  // un refresco de página lo vuelva a preseleccionar y cargar en vez de caer
+  // siempre al borrador sin guardar (ver init(), sección 14).
   function loadProject(id) {
     if (!id) {
       state.currentProjectId = null;
+      localStorage.removeItem(LS_KEYS.currentProjectId);
       refreshProjectSelect();
       return;
     }
@@ -3890,6 +4393,7 @@ P1 -> E1 : "Confirmación"
     try {
       const snap = JSON.parse(raw);
       state.currentProjectId = id;
+      localStorage.setItem(LS_KEYS.currentProjectId, id);
       state.suppressHistoryPush = true;
 
       // Compatibilidad con proyectos guardados antes de tener multi-modelo
@@ -3914,6 +4418,14 @@ P1 -> E1 : "Confirmación"
       state.layoutMode = snap.layoutMode || state.layoutMode;
       layoutButtons.forEach(b => b.classList.toggle('active', b.dataset.layout === state.layoutMode));
       localStorage.setItem(LS_KEYS.layout, state.layoutMode);
+
+      state.collapsedGroups = new Set(snap.collapsedGroups || []);
+      state.collapsedGroupPositions = Object.assign({}, snap.collapsedGroupPositions || {});
+      persistCollapsedGroupsState();
+
+      state.activeFlowFilter = null;
+      state.flowPositions = Object.assign({}, snap.flowPositions || {});
+      persistFlowPositions();
 
       persistModels();
       renderGraph(getDbml(), { keepPositions: true });
@@ -3946,12 +4458,16 @@ P1 -> E1 : "Confirmación"
   function buildFullExportSnapshot(name) {
     syncActiveModelIntoState();
     const positionsByType = {};
+    const flowPositionsByType = {};
     ['dbml', 'uml', 'dfd'].forEach(type => {
       if (type === state.activeModelType) {
         positionsByType[type] = state.positions;
+        flowPositionsByType[type] = state.flowPositions;
       } else {
         try { positionsByType[type] = JSON.parse(localStorage.getItem(LS_KEYS.positions + '.' + type) || '{}'); }
         catch (e) { positionsByType[type] = {}; }
+        try { flowPositionsByType[type] = JSON.parse(localStorage.getItem(LS_KEYS.flowPositions + '.' + type) || '{}'); }
+        catch (e) { flowPositionsByType[type] = {}; }
       }
     });
     return {
@@ -3962,6 +4478,7 @@ P1 -> E1 : "Confirmación"
       models: Object.assign({}, state.models),
       activeModelType: state.activeModelType,
       positionsByType,
+      flowPositionsByType,
       notes: Object.assign({}, state.notes),
       theme: state.theme,
       layoutMode: state.layoutMode,
@@ -3979,11 +4496,17 @@ P1 -> E1 : "Confirmación"
     cm.setOption('mode', state.activeModelType);
 
     const positionsByType = snap.positionsByType || {};
+    const flowPositionsByType = snap.flowPositionsByType || {};
     ['dbml', 'uml', 'dfd'].forEach(type => {
       const pos = positionsByType[type] || {};
       localStorage.setItem(LS_KEYS.positions + '.' + type, JSON.stringify(pos));
       if (type === state.activeModelType) state.positions = pos;
+
+      const flowPos = flowPositionsByType[type] || {};
+      localStorage.setItem(LS_KEYS.flowPositions + '.' + type, JSON.stringify(flowPos));
+      if (type === state.activeModelType) state.flowPositions = flowPos;
     });
+    state.activeFlowFilter = null;
 
     state.notes = Object.assign({ dbml: [], uml: [], dfd: [] }, snap.notes || {});
     state.selectedNoteId = null;
@@ -4000,6 +4523,7 @@ P1 -> E1 : "Confirmación"
 
     state.collapsedGroups = new Set(snap.collapsedGroups || []);
     state.collapsedGroupPositions = Object.assign({}, snap.collapsedGroupPositions || {});
+    persistCollapsedGroupsState();
 
     setDbml(state.models[state.activeModelType] || '');
     persistModels();
@@ -4095,7 +4619,9 @@ P1 -> E1 : "Confirmación"
 
     state.positions = {}; // cada tipo de modelo tiene su propio lienzo/posiciones
     try { state.positions = JSON.parse(localStorage.getItem(LS_KEYS.positions + '.' + type) || '{}'); } catch (e) { state.positions = {}; }
-    state.collapsedGroups = new Set();
+    loadCollapsedGroupsState(type);
+    loadFlowPositionsState(type);
+    state.activeFlowFilter = null; // el filtro de flujo es específico de DFD, no viaja entre pestañas
     clearSelection();
     state.selectedNoteId = null;
 
@@ -4528,6 +5054,13 @@ P1 -> E1 : "Confirmación"
   (function init() {
     try {
       // Restaura los 3 modelos guardados (o valores por defecto para cada uno)
+      // Se guarda ANTES de cualquier restauración, porque cargar un modelo
+      // guardado (más abajo) pisa state.activeModelType con la pestaña que
+      // tenía ESE modelo la última vez que se guardó explícitamente — que
+      // puede no ser la última pestaña real en la que estuvo el usuario si
+      // cambió de pestaña sin pulsar "💾 Guardar". Se reaplica al final.
+      const rememberedActiveTab = localStorage.getItem(LS_KEYS.activeModelType);
+
       let savedModels = null;
       try { savedModels = JSON.parse(localStorage.getItem(LS_KEYS.models) || 'null'); } catch (e) { savedModels = null; }
       const legacyDbml = localStorage.getItem(LS_KEYS.dbml); // compatibilidad con la versión previa a multi-modelo
@@ -4548,6 +5081,8 @@ P1 -> E1 : "Confirmación"
       try {
         state.positions = JSON.parse(localStorage.getItem(LS_KEYS.positions + '.' + state.activeModelType) || '{}');
       } catch (e) { state.positions = {}; }
+      loadCollapsedGroupsState(state.activeModelType);
+      loadFlowPositionsState(state.activeModelType);
 
       const initialText = state.models[state.activeModelType] || '';
       setDbml(initialText);
@@ -4567,6 +5102,22 @@ P1 -> E1 : "Confirmación"
       refreshGenerateFromOptions();
       setMobileView(state.mobileView);
       cm.refresh();
+
+      // Si había un modelo guardado seleccionado en el <select> (y sigue
+      // existiendo), lo recarga por completo en vez de quedarse con el
+      // borrador genérico — así el refresco de página preselecciona y
+      // carga el modelo tal como estaba, no un "Sin guardar" en blanco.
+      const rememberedProjectId = localStorage.getItem(LS_KEYS.currentProjectId);
+      if (rememberedProjectId && getProjectsIndex().some(p => p.id === rememberedProjectId)) {
+        loadProject(rememberedProjectId);
+      }
+
+      // La última pestaña real (dbml/uml/dfd) manda por encima de lo que haya
+      // quedado tras cargar un modelo guardado — ver el comentario donde se
+      // capturó rememberedActiveTab, arriba.
+      if (rememberedActiveTab && rememberedActiveTab !== state.activeModelType) {
+        switchModelType(rememberedActiveTab);
+      }
 
       window.addEventListener('resize', function () {
         cm.refresh();
