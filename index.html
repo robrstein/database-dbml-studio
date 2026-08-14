@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>DBML Studio — Editor &amp; Visualizador ER</title>
+<link rel="icon" type="image/x-icon" href="dbmlstudio.ico">
 
 <script src="https://cdn.tailwindcss.com"></script>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/jointjs/3.7.7/joint.css">
@@ -372,10 +373,28 @@
            comparten entre flujos; lo que se filtra es el conjunto de flechas
            (y los nodos que tocan) de un flujo a la vez, atenuando el resto —
            igual patrón que el filtro de Colores, pero aislando en vez de solo
-           resaltar. Ver updateFlowSwatches()/applyFlowFilterVisuals(). -->
+           resaltar. Ver updateFlowSwatches()/applyFlowFilterVisuals(). El
+           botón de tamaño alterna completo/mini/colapsado — ver
+           cyclePanelSize()/applyPanelSizeUI(). -->
       <div id="flow-panel" class="absolute top-3 left-3 hidden flex-col gap-1.5 bg-slate-900/90 border border-slate-700 rounded-lg p-2 max-h-[80%] overflow-y-auto" style="backdrop-filter: blur(4px);">
-        <span class="text-[10px] uppercase tracking-wider text-slate-500 px-1">Flujos</span>
+        <div class="flex items-center justify-between gap-2">
+          <span id="flow-panel-title" class="text-[10px] uppercase tracking-wider text-slate-500 px-1">Flujos</span>
+          <button id="flow-panel-size-btn" type="button" class="text-slate-500 hover:text-slate-200 text-xs leading-none w-4 h-4 flex items-center justify-center shrink-0"></button>
+        </div>
         <div id="flow-swatches" class="flex flex-col gap-1.5"></div>
+      </div>
+
+      <!-- Barra vertical flotante, solo visible en DBML cuando hay al menos un
+           TableGroup declarado. Mismo patrón que #flow-panel (DFD): cada botón
+           aísla ese TableGroup como su propio sub-diagrama (solo sus tablas
+           miembro y las relaciones internas entre ellas) y centra/ajusta el
+           zoom sobre él — ver updateGroupSwatches()/applyGroupFilter(). -->
+      <div id="group-panel" class="absolute top-3 left-3 hidden flex-col gap-1.5 bg-slate-900/90 border border-slate-700 rounded-lg p-2 max-h-[80%] overflow-y-auto" style="backdrop-filter: blur(4px);">
+        <div class="flex items-center justify-between gap-2">
+          <span id="group-panel-title" class="text-[10px] uppercase tracking-wider text-slate-500 px-1">Grupos</span>
+          <button id="group-panel-size-btn" type="button" class="text-slate-500 hover:text-slate-200 text-xs leading-none w-4 h-4 flex items-center justify-center shrink-0"></button>
+        </div>
+        <div id="group-swatches" class="flex flex-col gap-1.5"></div>
       </div>
     </div>
   </div>
@@ -525,6 +544,12 @@
   const elColorSwatches  = document.getElementById('color-swatches');
   const elFlowPanel      = document.getElementById('flow-panel');
   const elFlowSwatches   = document.getElementById('flow-swatches');
+  const elFlowPanelTitle = document.getElementById('flow-panel-title');
+  const elFlowPanelSizeBtn = document.getElementById('flow-panel-size-btn');
+  const elGroupPanel     = document.getElementById('group-panel');
+  const elGroupSwatches  = document.getElementById('group-swatches');
+  const elGroupPanelTitle = document.getElementById('group-panel-title');
+  const elGroupPanelSizeBtn = document.getElementById('group-panel-size-btn');
   const elBtnClearSel    = document.getElementById('btn-clear-selection');
   const elSelectionCount = document.getElementById('selection-count');
   const elZoomLabel      = document.getElementById('zoom-label');
@@ -1023,6 +1048,11 @@ P1 -> E1 : "Confirmación"
     activeColorFilter: null,    // color activo seleccionado vía swatch
     activeFlowFilter: null,     // nombre de flujo DFD activo (chip clickeado), o null — sub-diagrama aislado
     flowPositions: {},          // { flowName: { nodeName: {x,y} } } — layout propio de cada flujo DFD
+    activeGroupFilter: null,    // nombre de TableGroup DBML activo (chip clickeado), o null — sub-diagrama aislado;
+                                 // comparte state.positions con el diagrama general (a diferencia de los flujos DFD,
+                                 // un TableGroup no se solapa con otros, así que no necesita layout propio aparte)
+    flowPanelSize: localStorage.getItem('dbmlstudio.flowPanelSize') || 'full',   // 'full' | 'mini' | 'collapsed'
+    groupPanelSize: localStorage.getItem('dbmlstudio.groupPanelSize') || 'full', // ídem, para el panel de grupos DBML
     rubberBand: null,           // datos del recuadro de selección en curso
     dragGroup: null,            // datos del arrastre múltiple en curso
     groupFrameDrag: null,       // datos del arrastre de un TableGroup completo (vía su marco)
@@ -1820,6 +1850,75 @@ P1 -> E1 : "Confirmación"
     };
   }
 
+  // Dos tablas "una arriba de la otra" (o con bastante superposición
+  // horizontal): comparten rango de X, así que un codo con lados opuestos
+  // (uno sale derecha, el otro entra izquierda) dejaría el punto medio
+  // DENTRO de ambas tablas y el tramo vertical cruzaría por encima —
+  // ver dbmlSideAnchor/dbmlElbowConnector, que usan esto para detectar el
+  // caso y tratarlo distinto (mismo lado para los dos extremos).
+  function dbmlHorizontalOverlap(bboxA, bboxB) {
+    return bboxA.x < bboxB.x + bboxB.width && bboxB.x < bboxA.x + bboxA.width;
+  }
+
+  // Busca la otra tabla/chip conectada al link (la que NO es `endType`).
+  function dbmlOtherCell(linkView, endType) {
+    const otherEndType = endType === 'source' ? 'target' : 'source';
+    const otherEnd = linkView.model.get(otherEndType);
+    return (otherEnd && otherEnd.id) ? linkView.paper.model.getCell(otherEnd.id) : null;
+  }
+
+  // Anchor propio para relaciones DBML: en cada redibujo (incluso durante
+  // el arrastre) decide si el punto de contacto va por el borde izquierdo o
+  // derecho de la fila, comparando la posición ACTUAL de ambos extremos —
+  // a diferencia de un anchor fijo ('left' o 'right' elegido una sola vez
+  // al crear el link, como se hacía antes), esto evita que la relación
+  // quede mirando para el lado equivocado cuando se arrastra una tabla más
+  // allá de la otra y el orden izquierda/derecha entre ambas se invierte.
+  // Si las tablas están una arriba de la otra (se solapan en X, sin un
+  // lado claramente "hacia" el otro), ambos extremos salen por el mismo
+  // lado (derecha) en vez de lados opuestos — ver dbmlHorizontalOverlap.
+  function dbmlSideAnchor(view, magnet, ref, opt, endType, linkView) {
+    const bbox = view.getNodeBBox(magnet);
+    const otherCell = dbmlOtherCell(linkView, endType);
+    let side = 'right';
+    if (otherCell) {
+      const otherBBox = otherCell.getBBox();
+      if (!dbmlHorizontalOverlap(bbox, otherBBox)) {
+        side = bbox.center().x < otherBBox.center().x ? 'right' : 'left';
+      }
+    }
+    return side === 'right' ? bbox.rightMiddle() : bbox.leftMiddle();
+  }
+
+  // Connector propio para relaciones DBML: siempre un "codo" de máximo 2
+  // ángulos (horizontal → vertical → horizontal), sin el pathfinding
+  // esquiva-obstáculos de un router (que podía generar varias vueltas o
+  // espirales). Normalmente el punto medio es el promedio de las X de
+  // origen/destino (el tramo vertical cae en el hueco entre ambas tablas),
+  // pero si las tablas se solapan en X (una arriba de la otra — mismo caso
+  // que dbmlSideAnchor, que ya hizo salir a los dos extremos por la
+  // derecha) promediar dejaría ese tramo cruzando las tablas; en su lugar
+  // se empuja más allá del borde derecho más lejano de las dos. Al ser una
+  // función (no un router con vértices fijos), JointJS la vuelve a llamar
+  // en cada redibujo — incluso durante el arrastre — así que el codo se
+  // recalcula solo, sin quedar desalineado cuando se mueve una tabla.
+  function dbmlElbowConnector(sourcePoint, targetPoint, route, opt, linkView) {
+    let midX = (sourcePoint.x + targetPoint.x) / 2;
+    const model = linkView && linkView.model;
+    const srcEnd = model && model.get('source');
+    const tgtEnd = model && model.get('target');
+    const srcCell = srcEnd && srcEnd.id && linkView.paper.model.getCell(srcEnd.id);
+    const tgtCell = tgtEnd && tgtEnd.id && linkView.paper.model.getCell(tgtEnd.id);
+    if (srcCell && tgtCell) {
+      const srcBBox = srcCell.getBBox(), tgtBBox = tgtCell.getBBox();
+      if (dbmlHorizontalOverlap(srcBBox, tgtBBox)) {
+        midX = Math.max(srcBBox.x + srcBBox.width, tgtBBox.x + tgtBBox.width) + 24;
+      }
+    }
+    const elbowRoute = [{ x: midX, y: sourcePoint.y }, { x: midX, y: targetPoint.y }];
+    return joint.connectors.rounded(sourcePoint, targetPoint, elbowRoute, Object.assign({ radius: 8 }, opt));
+  }
+
   function renderGraph(dbmlText, opts) {
     opts = opts || {};
     const modelType = state.activeModelType;
@@ -1858,10 +1957,16 @@ P1 -> E1 : "Confirmación"
     // nombre de CADA tabla miembro, para que las relaciones que las tocan se
     // redirijan hacia el chip (en vez de perderse) — así el grupo colapsado
     // conserva sus líneas de relación hacia el resto del diagrama.
+    // Con un TableGroup aislado (ver más abajo) el sub-diagrama se limita a
+    // sus propias tablas: los chips de OTROS grupos colapsados no aportan
+    // nada (sus relaciones externas ya quedan fuera del filtro), así que se
+    // omiten para no ensuciar el lienzo con cajas sin conexión.
     const hiddenByCollapse = {}; // nombre de tabla -> nombre de grupo
-    (parsed.groups || []).forEach(g => {
-      if (state.collapsedGroups.has(g.name)) g.tables.forEach(t => { hiddenByCollapse[t] = g.name; });
-    });
+    if (!(modelType === 'dbml' && state.activeGroupFilter)) {
+      (parsed.groups || []).forEach(g => {
+        if (state.collapsedGroups.has(g.name)) g.tables.forEach(t => { hiddenByCollapse[t] = g.name; });
+      });
+    }
     const collapsedGroupNames = new Set(Object.values(hiddenByCollapse));
     collapsedGroupNames.forEach(groupName => {
       const g = (parsed.groups || []).find(x => x.name === groupName);
@@ -1878,6 +1983,15 @@ P1 -> E1 : "Confirmación"
     // siquiera se agrega al grafo, no es solo atenuado) y las posiciones se
     // leen/guardan en su propio bucket — ver saveAllPositions(). Sin filtro
     // activo, todo el modelo se renderiza como siempre.
+    //
+    // Un TableGroup DBML aislado sigue el mismo patrón de "sub-diagrama"
+    // para tablas/relaciones visibles (membresía = lista de tablas del
+    // grupo, y solo relaciones internas al grupo), PERO a diferencia de un
+    // flujo DFD comparte state.positions con el diagrama general en vez de
+    // tener un bucket propio: un TableGroup no se solapa con otros grupos,
+    // así que no hay ambigüedad de "qué posición vale" y el usuario espera
+    // que mover una tabla en el sub-diagrama se refleje en el general (y
+    // viceversa) — ver saveAllPositions().
     let renderTables = parsed.tables;
     let renderRefs = parsed.refs;
     if (modelType === 'dfd' && state.activeFlowFilter) {
@@ -1885,6 +1999,11 @@ P1 -> E1 : "Confirmación"
       const touchedNames = new Set();
       renderRefs.forEach(r => { touchedNames.add(r.from.table); touchedNames.add(r.to.table); });
       renderTables = parsed.tables.filter(t => touchedNames.has(t.name));
+    } else if (modelType === 'dbml' && state.activeGroupFilter) {
+      const activeGroup = (parsed.groups || []).find(g => g.name === state.activeGroupFilter);
+      const memberNames = new Set(activeGroup ? activeGroup.tables : []);
+      renderTables = parsed.tables.filter(t => memberNames.has(t.name));
+      renderRefs = parsed.refs.filter(r => memberNames.has(r.from.table) && memberNames.has(r.to.table));
     }
     const activeFlowBucket = (modelType === 'dfd' && state.activeFlowFilter)
       ? (state.flowPositions[state.activeFlowFilter] || {})
@@ -1966,13 +2085,55 @@ P1 -> E1 : "Confirmación"
       const targetSpec = { id: tgt.id };
       if (tgtFieldIdx >= 0) targetSpec.selector = 'row' + tgtFieldIdx;
 
-      const link = new joint.dia.Link({
+      // Solo en DBML: la relación siempre debe salir/entrar por el lado
+      // izquierdo o derecho de la fila (nunca arriba/abajo), apuntando hacia
+      // el otro extremo, con como máximo 2 ángulos (forma de "codo": tramo
+      // horizontal → vertical → horizontal) — nunca el pathfinding
+      // esquiva-obstáculos del router "manhattan", que podía generar varios
+      // giros (incluso espirales) buscando el camino más corto entre tablas
+      // cercanas. dbmlSideAnchor decide el lado (y dbmlElbowConnector arma
+      // el codo) en cada redibujo, no una sola vez al crear el link — así
+      // arrastrar una tabla más allá de la otra no deja la relación
+      // "mirando" al lado viejo. Si las tablas están muy juntas el codo
+      // puede quedar corto, o varias relaciones salir cerca unas de otras:
+      // es aceptable, no se intenta esquivar ni separar automáticamente.
+      let linkRouter = { name: 'manhattan', args: { padding: 16, step: 12, startDirections: ['left', 'right'], endDirections: ['left', 'right'] } };
+      let linkConnector = { name: 'rounded', args: { radius: 8 } };
+      if (modelType === 'dbml') {
+        sourceSpec.anchor = dbmlSideAnchor;
+        targetSpec.anchor = dbmlSideAnchor;
+        // El paper trae un defaultConnectionPoint 'boundary' contra el
+        // selector fijo "body" (el rect de TODA la tabla, no el de la
+        // fila): sin este override, JointJS "recorta" nuestro anchor ya
+        // resuelto intersectándolo con esa caja completa, usando como
+        // referencia la línea RECTA entre los dos anchors (ver
+        // findConnectionPoints en LinkView — el codo del connector es
+        // posterior, no participa acá). Con tablas alineadas verticalmente
+        // esa línea de referencia es casi vertical y "boundary" la
+        // proyecta contra el borde de ARRIBA/ABAJO en vez del de la fila
+        // que sí eligió dbmlSideAnchor — la relación queda sin tocar ni la
+        // PK ni la FK. connectionPoint 'anchor' desactiva ese recorte:
+        // usa el punto del anchor tal cual, sin reinterpretarlo.
+        sourceSpec.connectionPoint = { name: 'anchor' };
+        targetSpec.connectionPoint = { name: 'anchor' };
+        linkRouter = { name: 'normal' };
+        linkConnector = dbmlElbowConnector;
+      }
+
+      // IMPORTANTE: joint.shapes.standard.Link (no joint.dia.Link a secas). El
+      // Link base usa un markup plano viejo (clase "connection", sin selector
+      // "line") con stroke="black" grabado a fuego en el string del markup;
+      // como attrs.line/targetMarker/sourceMarker apuntan al selector "line",
+      // sobre un dia.Link base esos overrides no matchean nada y la línea
+      // queda negra sin importar el tema — standard.Link sí define ese
+      // selector "line" en su markup, que es lo que todo este bloque asume.
+      const link = new joint.shapes.standard.Link({
         id: 'ref_' + ref.from.table + '_' + ref.from.field + '_' + ref.to.table + '_' + ref.to.field + '_' + Math.random().toString(36).slice(2, 7),
         type: 'app.Ref',
         source: sourceSpec,
         target: targetSpec,
-        router: { name: 'manhattan', args: { padding: 16, step: 12, startDirections: ['left', 'right'], endDirections: ['left', 'right'] } },
-        connector: { name: 'rounded', args: { radius: 8 } },
+        router: linkRouter,
+        connector: linkConnector,
         attrs: { line: { stroke: linkColor, strokeWidth: 2.25, filter: THEMES[theme].linkGlow } },
         z: 1,
         flows: ref.flows || [] // etiquetas [flow: Nombre] del DFD — ver applyFlowFilterVisuals()
@@ -2061,6 +2222,7 @@ P1 -> E1 : "Confirmación"
     updateSelectionUI();
     updateColorSwatches();
     updateFlowSwatches();
+    updateGroupSwatches();
 
     if (!opts.keepPositions && !Object.keys(state.positions).length) {
       applyLayout(state.layoutMode, { silent: true });
@@ -2079,16 +2241,21 @@ P1 -> E1 : "Confirmación"
   function saveAllPositions() {
     // IMPORTANTE: se parte de las posiciones ya guardadas (Object.assign) en
     // vez de un objeto vacío. Si se reemplazara por completo, cualquier
-    // arrastre mientras un TableGroup está colapsado borraría la posición
-    // recordada de sus tablas ocultas (que no están en getElements() en ese
-    // momento, al no existir como elementos en el lienzo).
+    // arrastre mientras un TableGroup está colapsado (o mientras otro grupo
+    // distinto está aislado) borraría la posición recordada de las tablas
+    // que no están en getElements() en ese momento, al no existir como
+    // elementos en el lienzo.
     const positions = Object.assign({}, state.positions);
 
     // Un flujo DFD aislado se renderiza como su propio sub-diagrama (ver
     // renderGraph): mientras está activo, TODO lo que existe en el grafo
     // pertenece a ese flujo, así que su posición se guarda en el bucket
     // propio del flujo en vez de en el layout global — el layout global
-    // permanece intacto hasta que se vuelve a ver el modelo completo.
+    // permanece intacto hasta que se vuelve a ver el modelo completo. Un
+    // TableGroup DBML aislado, en cambio, guarda directamente en
+    // state.positions (mismo bucket que el diagrama general): moverlo en
+    // el sub-diagrama del grupo debe reflejarse en el diagrama general y
+    // viceversa — ver comentario en renderGraph().
     const flowActive = state.activeModelType === 'dfd' && state.activeFlowFilter;
     const flowBucket = flowActive
       ? (state.flowPositions[state.activeFlowFilter] = state.flowPositions[state.activeFlowFilter] || {})
@@ -3041,6 +3208,75 @@ P1 -> E1 : "Confirmación"
   }
 
   /* =========================================================================
+     7a2. TAMAÑO DE PANELES FLOTANTES — #flow-panel (DFD) y #group-panel
+     (DBML) comparten el mismo botón de tres tamaños en su cabecera:
+       "full"      → lista completa, con el nombre entero de cada flujo/grupo
+       "mini"      → lista compacta, solo el número de orden por botón (el
+                     nombre completo queda en el title/tooltip)
+       "collapsed" → solo la cabecera con el botón de tamaño, todo lo demás
+                     oculto, para recuperar espacio de lienzo
+     Un clic en el botón avanza al siguiente tamaño en ese orden (cíclico).
+     La preferencia es por panel (no por tipo de modelo) y persiste en
+     localStorage — ver updateFlowSwatches()/updateGroupSwatches(), que
+     llaman a applyPanelSizeUI() después de reconstruir los botones.
+     ========================================================================= */
+  const PANEL_SIZE_CYCLE = ['full', 'mini', 'collapsed'];
+  const PANEL_SIZE_GLYPH = { full: '−', mini: '···', collapsed: '+' };
+  const PANEL_SIZE_TITLE = {
+    full: 'Panel completo (clic para reducir)',
+    mini: 'Panel reducido (clic para colapsar)',
+    collapsed: 'Panel colapsado (clic para expandir)'
+  };
+
+  function panelRefs(which) {
+    return which === 'flow'
+      ? { panel: elFlowPanel, title: elFlowPanelTitle, swatches: elFlowSwatches, btn: elFlowPanelSizeBtn }
+      : { panel: elGroupPanel, title: elGroupPanelTitle, swatches: elGroupSwatches, btn: elGroupPanelSizeBtn };
+  }
+
+  // Botón de un flujo/grupo dentro de #flow-swatches / #group-swatches: en
+  // tamaño "mini" se etiqueta con el número de orden (más compacto) en vez
+  // del nombre completo, que igual queda disponible como tooltip.
+  function buildPanelSwatchButton(name, index, size, isActive, hint, onClick) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    const mini = size === 'mini';
+    btn.className = mini
+      ? 'tbtn shrink-0 w-7 h-7 justify-center text-[11px]' + (isActive ? ' active' : '')
+      : 'tbtn w-full text-left' + (isActive ? ' active' : '');
+    btn.textContent = mini ? String(index + 1) : name;
+    btn.title = hint;
+    btn.addEventListener('click', onClick);
+    return btn;
+  }
+
+  function applyPanelSizeUI(which) {
+    const size = which === 'flow' ? state.flowPanelSize : state.groupPanelSize;
+    const refs = panelRefs(which);
+    refs.title.classList.toggle('hidden', size === 'collapsed');
+    refs.swatches.classList.toggle('hidden', size === 'collapsed');
+    refs.swatches.classList.toggle('flex-col', size !== 'mini');
+    refs.swatches.classList.toggle('flex-row', size === 'mini');
+    refs.swatches.classList.toggle('flex-wrap', size === 'mini');
+    refs.swatches.classList.toggle('max-w-[110px]', size === 'mini');
+    refs.btn.textContent = PANEL_SIZE_GLYPH[size];
+    refs.btn.title = PANEL_SIZE_TITLE[size];
+  }
+
+  function cyclePanelSize(which) {
+    const cur = which === 'flow' ? state.flowPanelSize : state.groupPanelSize;
+    const next = PANEL_SIZE_CYCLE[(PANEL_SIZE_CYCLE.indexOf(cur) + 1) % PANEL_SIZE_CYCLE.length];
+    if (which === 'flow') { state.flowPanelSize = next; localStorage.setItem('dbmlstudio.flowPanelSize', next); }
+    else { state.groupPanelSize = next; localStorage.setItem('dbmlstudio.groupPanelSize', next); }
+    // El tamaño cambia cómo se etiquetan los botones (nombre completo vs.
+    // número), así que se reconstruyen en vez de solo alternar clases.
+    if (which === 'flow') updateFlowSwatches(); else updateGroupSwatches();
+  }
+
+  elFlowPanelSizeBtn.addEventListener('click', function (evt) { evt.stopPropagation(); cyclePanelSize('flow'); });
+  elGroupPanelSizeBtn.addEventListener('click', function (evt) { evt.stopPropagation(); cyclePanelSize('group'); });
+
+  /* =========================================================================
      7b-DFD. FILTRO DE FLUJOS (DFD) — a diferencia de TableGroup/package, que
      agrupan NODOS, un "flujo" DFD agrupa FLECHAS: los mismos Process/Store/
      Entity se comparten entre varios flujos (login, magic code, scraping...),
@@ -3098,16 +3334,87 @@ P1 -> E1 : "Confirmación"
     elFlowPanel.classList.remove('hidden');
     elFlowPanel.classList.add('flex');
     elFlowSwatches.innerHTML = '';
-    names.forEach(name => {
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.className = 'tbtn w-full text-left' + (state.activeFlowFilter === name ? ' active' : '');
-      btn.textContent = name;
-      btn.title = 'Aislar el flujo "' + name + '" (clic de nuevo para mostrar todo)';
-      btn.addEventListener('click', function () { applyFlowFilter(name); });
+    names.forEach((name, i) => {
+      const btn = buildPanelSwatchButton(
+        name, i, state.flowPanelSize, state.activeFlowFilter === name,
+        'Aislar el flujo "' + name + '" (clic de nuevo para mostrar todo)',
+        function () { applyFlowFilter(name); }
+      );
       elFlowSwatches.appendChild(btn);
     });
     applyFlowFilterVisuals();
+    applyPanelSizeUI('flow');
+  }
+
+  /* =========================================================================
+     7b-DBML. FILTRO DE GRUPOS (TableGroup) — mismo patrón que el filtro de
+     flujos DFD (ver 7b-DFD arriba), pero la membresía de un TableGroup la
+     define directamente su lista de tablas (no relaciones que lo "tocan"):
+     aislar un grupo muestra solo sus tablas miembro y las relaciones
+     internas entre ellas, tratándolo como su propio sub-diagrama. El resto
+     de tablas/relaciones ni siquiera se agrega al grafo (ver renderGraph),
+     así que selección, minimapa y layouts ya operan solo sobre lo visible.
+     A diferencia de un flujo DFD, el grupo aislado NO tiene un bucket de
+     posiciones propio: comparte state.positions con el diagrama general
+     (ver saveAllPositions), así que mover una tabla dentro del sub-diagrama
+     del grupo se refleja en el diagrama general y viceversa.
+     ========================================================================= */
+  function getAllGroupNames() {
+    return (state.parsed.groups || []).map(g => g.name);
+  }
+
+  function applyGroupFilterVisuals() {
+    Array.from(elGroupSwatches.children).forEach(b => {
+      b.classList.toggle('active', b.textContent === state.activeGroupFilter);
+    });
+  }
+
+  // Punto de entrada para los chips: cambia el grupo activo (o lo limpia si
+  // ya estaba activo) y reconstruye el grafo entero — ver renderGraph(). Al
+  // aislar un grupo (no al salir de él) se centra y ajusta el zoom a sus
+  // tablas, para que el sub-diagrama quede visible de entrada sin que el
+  // usuario tenga que buscarlo manualmente en el lienzo.
+  function applyGroupFilter(name) {
+    const activating = state.activeGroupFilter !== name;
+    state.activeGroupFilter = activating ? name : null;
+    renderGraph(getDbml(), { keepPositions: true });
+    if (activating) {
+      const g = (state.parsed.groups || []).find(x => x.name === name);
+      const els = g ? g.tables.map(t => graph.getCell('tbl_' + t)).filter(Boolean) : [];
+      if (els.length) zoomToBBox(selectionBBox(els));
+    }
+  }
+
+  function updateGroupSwatches() {
+    if (state.activeModelType !== 'dbml') {
+      elGroupPanel.classList.add('hidden');
+      elGroupPanel.classList.remove('flex');
+      return;
+    }
+    const names = getAllGroupNames();
+    if (!names.length) {
+      elGroupPanel.classList.add('hidden');
+      elGroupPanel.classList.remove('flex');
+      state.activeGroupFilter = null;
+      return;
+    }
+    // Si el grupo activo ya no existe (se borró/renombró en el texto), se limpia.
+    if (state.activeGroupFilter && !names.includes(state.activeGroupFilter)) {
+      state.activeGroupFilter = null;
+    }
+    elGroupPanel.classList.remove('hidden');
+    elGroupPanel.classList.add('flex');
+    elGroupSwatches.innerHTML = '';
+    names.forEach((name, i) => {
+      const btn = buildPanelSwatchButton(
+        name, i, state.groupPanelSize, state.activeGroupFilter === name,
+        'Aislar el grupo "' + name + '" como sub-diagrama (clic de nuevo para mostrar todo)',
+        function () { applyGroupFilter(name); }
+      );
+      elGroupSwatches.appendChild(btn);
+    });
+    applyGroupFilterVisuals();
+    applyPanelSizeUI('group');
   }
 
   /* =========================================================================
@@ -3816,10 +4123,10 @@ P1 -> E1 : "Confirmación"
     if (!document.fullscreenElement && state.presentationMode) exitPresentationMode();
   });
 
-  function zoomToSelection() {
-    const els = selectedElementsList();
-    if (!els.length) return;
-    const bbox = selectionBBox(els);
+  // Centra y ajusta el zoom para que un bounding box quede completo en el
+  // lienzo visible — usado tanto por "zoom a selección" como por el aislado
+  // de un TableGroup desde el panel flotante (ver applyGroupFilter).
+  function zoomToBBox(bbox) {
     const pad = 70;
     const rect = elPaperContainer.getBoundingClientRect();
     let scale = Math.min(
@@ -3835,6 +4142,12 @@ P1 -> E1 : "Confirmación"
     state.zoom = scale;
     elZoomLabel.textContent = Math.round(scale * 100) + '%';
     updateMinimap();
+  }
+
+  function zoomToSelection() {
+    const els = selectedElementsList();
+    if (!els.length) return;
+    zoomToBBox(selectionBBox(els));
   }
 
   elBtnZoomSel.addEventListener('click', zoomToSelection);
@@ -4427,6 +4740,8 @@ P1 -> E1 : "Confirmación"
       state.flowPositions = Object.assign({}, snap.flowPositions || {});
       persistFlowPositions();
 
+      state.activeGroupFilter = null;
+
       persistModels();
       renderGraph(getDbml(), { keepPositions: true });
 
@@ -4507,6 +4822,7 @@ P1 -> E1 : "Confirmación"
       if (type === state.activeModelType) state.flowPositions = flowPos;
     });
     state.activeFlowFilter = null;
+    state.activeGroupFilter = null;
 
     state.notes = Object.assign({ dbml: [], uml: [], dfd: [] }, snap.notes || {});
     state.selectedNoteId = null;
@@ -4622,6 +4938,7 @@ P1 -> E1 : "Confirmación"
     loadCollapsedGroupsState(type);
     loadFlowPositionsState(type);
     state.activeFlowFilter = null; // el filtro de flujo es específico de DFD, no viaja entre pestañas
+    state.activeGroupFilter = null; // el filtro de grupo es específico de DBML, no viaja entre pestañas
     clearSelection();
     state.selectedNoteId = null;
 
