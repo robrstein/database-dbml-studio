@@ -155,6 +155,10 @@ Todas las dependencias se cargan desde CDN público, sin instalación:
 
 Ninguna de estas licencias impide usar, modificar o publicar este proyecto, incluso comercialmente. El único aviso a tener en cuenta es que el CDN de Tailwind (`cdn.tailwindcss.com`) compila el CSS en el navegador en cada carga — funciona perfecto, pero no es la forma más liviana posible; es un tema de rendimiento, no de licencia.
 
+## Licencia
+
+[GPL-3.0](./LICENSE)
+
 ## Limitaciones conocidas
 
 ## Roadmap
